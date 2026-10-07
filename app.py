@@ -60,7 +60,7 @@ def load_credentials():
     default_index = (
         year_options.index(default_year) if default_year in year_options else len(year_options) - 1
     )
-    year = st.sidebar.selectbox("Season", year_options, index=default_index)
+    year = dropdown("Season", year_options, container=st.sidebar, index=default_index)
 
     espn_s2 = st.sidebar.text_input(
         "espn_s2", value=os.getenv("ESPN_S2", ""), type="password"
@@ -88,6 +88,38 @@ def load_credentials():
 def _safe_round(value, digits=1):
     """Round a stat value, tolerating None or missing attributes."""
     return round(value, digits) if isinstance(value, (int, float)) else None
+
+
+# Lineup-slot display order, matching ESPN's team page:
+# QB, RB, WR, TE, FLEX, DP, K, Bench, IR.
+SLOT_ORDER = [
+    "QB", "TQB", "RB", "WR", "TE",
+    "RB/WR", "WR/TE", "RB/WR/TE", "OP",               # flex-type slots
+    "DT", "DE", "LB", "DL", "CB", "S", "DB", "DP",    # IDP slots
+    "D/ST", "K", "P", "HC",
+    "BE", "IR",
+]
+SLOT_LABELS = {"RB/WR/TE": "FLEX", "BE": "Bench"}
+
+
+def slot_rank(slot: str) -> int:
+    return SLOT_ORDER.index(slot) if slot in SLOT_ORDER else len(SLOT_ORDER)
+
+
+def dropdown(label, options, container=st, **kwargs):
+    """Select-only dropdown: typing/filtering is switched off.
+    filter_mode=None needs a recent Streamlit; on an older one we fall
+    back to a normal selectbox instead of crashing (upgrade with
+    `pip install -U streamlit` to get select-only behaviour)."""
+    try:
+        return container.selectbox(label, options, filter_mode=None, **kwargs)
+    except TypeError:
+        return container.selectbox(label, options, **kwargs)
+
+
+def fit_height(df, row_px: int = 35) -> int:
+    """Pixel height that shows every row (plus header) with no scrolling."""
+    return (len(df) + 1) * row_px + 3
 
 
 def get_season_proj_points(player):
@@ -183,15 +215,18 @@ def build_standings_df(league: League) -> pd.DataFrame:
 
 
 def build_roster_df(team, week: int, lookup: dict) -> pd.DataFrame:
+    """Roster in ESPN's slot order (QB, RB, WR, TE, FLEX, DP, K, Bench, IR).
+    Players keep ESPN's own order within a slot."""
     week_col = f"Week {week} Proj"
     rows = []
     for player in team.roster:
         rows.append(
             {
+                "_slot_rank": slot_rank(player.lineupSlot),
+                "Slot": SLOT_LABELS.get(player.lineupSlot, player.lineupSlot),
                 "Player": player.name,
                 "Position": player.position,
                 "Pro Team": player.proTeam,
-                "Slot": player.lineupSlot,
                 week_col: _safe_round(get_week_proj_points(player, week, lookup)),
                 "Avg Points": _safe_round(get_avg_points(player)),
                 "Season Proj": _safe_round(get_season_proj_points(player)),
@@ -200,8 +235,10 @@ def build_roster_df(team, week: int, lookup: dict) -> pd.DataFrame:
         )
     df = pd.DataFrame(rows)
     if not df.empty:
-        df = df.sort_values(by=week_col, ascending=False, na_position="last").reset_index(
-            drop=True
+        df = (
+            df.sort_values(by="_slot_rank", kind="stable")
+            .drop(columns="_slot_rank")
+            .reset_index(drop=True)
         )
     return df
 
@@ -220,16 +257,81 @@ def build_matchup_df(league: League, week: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+POWER_WEIGHTS = {"dominance": 0.80, "avg_score": 0.15, "avg_mov": 0.05}
+
+POWER_FOOTNOTE = (
+    "**Formula:** Power Score = 0.80 × Dominance + 0.15 × Avg Score + 0.05 × Avg MOV"
+    "\n\n"
+    "**Dominance** = Direct Wins + Indirect Wins. *Direct Wins* are the matchups a "
+    "team has won through the selected week. *Indirect Wins*: each time a team "
+    "beat an opponent, that opponent's own win total is added."
+    "\n\n"
+    "**Avg Score** is average points scored per week and **Avg MOV** is average "
+    "margin of victory (negative means the team loses by that much on average). "
+    "The formula drops the decimals from both, so the whole numbers it actually "
+    "uses are shown."
+    "\n\n"
+    "Computed by the espn_api library through the selected week; it may differ "
+    "from the power rankings on ESPN's own site."
+)
+
+
 def build_power_rankings_df(league: League, week: int) -> pd.DataFrame:
+    """
+    Power rankings with every input of the formula as its own column.
+    The Power Score itself comes straight from the library, and the
+    columns are recomputed from the same raw data; df.attrs["formula_matches"]
+    records whether those columns reproduce the library's score.
+    """
     try:
         rankings = league.power_rankings(week=week)
     except Exception:
         return pd.DataFrame()
-    rows = [
-        {"Rank": i + 1, "Team": team.team_name, "Score": score}
-        for i, (score, team) in enumerate(rankings)
+
+    wk = week if 0 < week <= league.current_week else league.current_week
+    teams = sorted(league.teams, key=lambda t: t.team_id)
+    n = len(teams)
+    pos = {t.team_id: i for i, t in enumerate(teams)}
+
+    wins = [[0] * n for _ in range(n)]  # wins[i][j] = times team i beat team j
+    for i, team in enumerate(teams):
+        for mov, opp in zip(team.mov[:wk], team.schedule[:wk]):
+            if mov > 0:
+                wins[i][pos[opp.team_id]] += 1
+    direct = [sum(row) for row in wins]
+    indirect = [
+        sum(wins[i][k] * wins[k][j] for k in range(n) for j in range(n))
+        for i in range(n)
     ]
-    return pd.DataFrame(rows)
+
+    rows, matches = [], True
+    for rank, (score, team) in enumerate(rankings, start=1):
+        i = pos[team.team_id]
+        dominance = direct[i] + indirect[i]
+        avg_score = int(sum(team.scores[:wk]) / wk)
+        avg_mov = int(sum(team.mov[:wk]) / wk)
+        recomputed = (
+            dominance * POWER_WEIGHTS["dominance"]
+            + avg_score * POWER_WEIGHTS["avg_score"]
+            + avg_mov * POWER_WEIGHTS["avg_mov"]
+        )
+        if abs(recomputed - float(score)) > 0.011:
+            matches = False
+        rows.append(
+            {
+                "Rank": rank,
+                "Team": team.team_name,
+                "Direct Wins": direct[i],
+                "Indirect Wins": indirect[i],
+                "Dominance": dominance,
+                "Avg Score": avg_score,
+                "Avg MOV": avg_mov,
+                "Power Score": float(score),
+            }
+        )
+    df = pd.DataFrame(rows)
+    df.attrs["formula_matches"] = matches
+    return df
 
 
 # ---------------------------------------------------------------------
@@ -257,7 +359,7 @@ def optimize_lineup(league: League, team, week: int, lookup: dict):
     slot_counts.pop("IR", None)
 
     def slot_sort_key(slot_name):
-        is_flex = "/" in slot_name or slot_name.upper() in ("FLEX", "OP", "UTIL")
+        is_flex = "/" in slot_name or slot_name.upper() in ("FLEX", "OP", "UTIL", "DP")
         return (1 if is_flex else 0, slot_name)
 
     ordered_slots = sorted(slot_counts.keys(), key=slot_sort_key)
@@ -343,7 +445,10 @@ def build_free_agents_df(league: League, week: int, position: str, size: int = 5
     except Exception:
         players = league.free_agents(size=size)
         if pos_arg:
-            players = [p for p in players if p.position == pos_arg]
+            players = [
+                p for p in players
+                if pos_arg in (getattr(p, "eligibleSlots", None) or [p.position])
+            ]
 
     week_col = f"Week {week} Proj"
     rows = []
@@ -513,7 +618,12 @@ def main():
     # --- Standings ---
     with tab1:
         standings_df = build_standings_df(league)
-        st.dataframe(standings_df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            standings_df,
+            use_container_width=True,
+            hide_index=True,
+            height=fit_height(standings_df),
+        )
 
         fig = px.bar(
             standings_df,
@@ -529,9 +639,9 @@ def main():
         rc1, rc2 = st.columns(2)
         with rc1:
             team_names = [t.team_name for t in league.teams]
-            selected = st.selectbox("Select a team", team_names)
+            selected = dropdown("Select a team", team_names)
         with rc2:
-            roster_week = st.selectbox(
+            roster_week = dropdown(
                 "Week", week_options, index=default_week_index, key="roster_week"
             )
         team = next(t for t in league.teams if t.team_name == selected)
@@ -584,7 +694,7 @@ def main():
 
     # --- Matchups ---
     with tab3:
-        week = st.selectbox(
+        week = dropdown(
             "Week", week_options, index=default_week_index, key="matchup_week"
         )
         matchup_df = build_matchup_df(league, int(week))
@@ -592,7 +702,7 @@ def main():
 
     # --- Power Rankings ---
     with tab4:
-        pr_week = st.selectbox(
+        pr_week = dropdown(
             "Week for power rankings",
             week_options,
             index=default_week_index,
@@ -602,19 +712,31 @@ def main():
         if pr_df.empty:
             st.warning("Power rankings aren't available for this week yet.")
         else:
-            st.dataframe(pr_df, use_container_width=True, hide_index=True)
+            st.dataframe(
+                pr_df,
+                use_container_width=True,
+                hide_index=True,
+                height=fit_height(pr_df),
+            )
+            if not pr_df.attrs.get("formula_matches", True):
+                st.warning(
+                    "The columns above don't exactly reproduce the Power Score, "
+                    "so your espn_api version may use a slightly different "
+                    "formula. The score shown is the library's own."
+                )
+            st.caption(POWER_FOOTNOTE)
 
     # --- Free Agents / Waiver Wire ---
     with tab5:
         fa_col1, fa_col2 = st.columns(2)
         with fa_col1:
-            fa_week = st.selectbox(
+            fa_week = dropdown(
                 "Week", week_options, index=default_week_index, key="fa_week"
             )
         with fa_col2:
-            position = st.selectbox(
+            position = dropdown(
                 "Position",
-                ["All", "QB", "RB", "WR", "TE", "D/ST", "K"],
+                ["All", "QB", "RB", "WR", "TE", "DP", "K"],
                 key="fa_position",
             )
 
@@ -686,7 +808,7 @@ def main():
             "For a completed week, shows which starters beat or missed "
             "their projection by the widest margin, league-wide."
         )
-        recap_week = st.selectbox(
+        recap_week = dropdown(
             "Week",
             week_options,
             index=max(default_week_index - 1, 0),  # default to last completed week
