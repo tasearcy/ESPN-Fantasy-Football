@@ -1,0 +1,5 @@
+espn_api
+streamlit
+pandas
+plotly
+python-dotenv
