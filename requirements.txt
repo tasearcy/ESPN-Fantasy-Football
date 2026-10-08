@@ -1,5 +1,6 @@
 espn_api
-streamlit
+streamlit>=1.65
 pandas
 plotly
 python-dotenv
+scipy
