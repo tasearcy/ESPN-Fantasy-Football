@@ -1163,6 +1163,63 @@ h2, h3 { letter-spacing: -0.01em; }
 .sb-split { margin: 0.35rem 0.9rem 0.25rem; }
 .sb-split .bar-track { height: 6px; }
 .sb-split-cap { font-size: 0.7rem; opacity: 0.6; display: flex; justify-content: space-between; margin-top: 0.2rem; }
+
+.podium { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0.9rem; align-items: end; margin-bottom: 1rem; }
+.pod { border-radius: 16px; padding: 1rem 1.2rem; border: 1px solid rgba(128,128,128,0.28);
+  background: rgba(128,128,128,0.08); border-top: 5px solid var(--medal); }
+.pod.first { padding-top: 1.4rem; padding-bottom: 1.4rem; background: rgba(245,197,66,0.10); }
+.pod-medal { font-size: 1.6rem; }
+.pod-team { font-size: 1.25rem; font-weight: 800; overflow-wrap: anywhere; }
+.pod-sub { opacity: 0.7; font-size: 0.85rem; }
+.pod-line { margin-top: 0.5rem; display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+
+.lc-h { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; margin: 0.9rem 0 0.4rem; }
+.lc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.7rem; }
+.lc { border: 1px solid rgba(128,128,128,0.28); border-radius: 14px; padding: 0.7rem 0.85rem; background: rgba(128,128,128,0.08);
+  display: flex; flex-direction: column; gap: 0.15rem; }
+.lc.muted { opacity: 0.85; background: rgba(128,128,128,0.04); }
+.lc-top { display: flex; justify-content: space-between; align-items: center; min-height: 1.5rem; }
+.lc-slot { font-size: 0.7rem; font-weight: 800; letter-spacing: 0.08em; color: #0b1220; background: #38bdf8;
+  border-radius: 6px; padding: 0.08rem 0.45rem; }
+.lc.muted .lc-slot { background: rgba(128,128,128,0.5); color: #fff; }
+.lc-name { font-weight: 700; overflow-wrap: anywhere; line-height: 1.2; margin-top: 0.2rem; }
+.lc-sub { font-size: 0.78rem; opacity: 0.65; }
+.lc-bot { display: flex; align-items: baseline; justify-content: space-between; margin-top: 0.35rem; }
+.lc-proj { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.lc-avg { font-size: 0.75rem; opacity: 0.6; }
+.dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+
+.mv-list { display: grid; gap: 0.6rem; }
+.mv { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.4rem; border: 1px solid rgba(128,128,128,0.28);
+  border-radius: 14px; padding: 0.7rem 1rem; background: rgba(128,128,128,0.07); }
+.mv-side { display: flex; align-items: center; gap: 0.5rem; min-width: 210px; flex: 1; }
+.mv-up .arr { color: #34d399; } .mv-down .arr { color: #f87171; }
+.mv-p { margin-left: auto; font-variant-numeric: tabular-nums; opacity: 0.8; }
+.mv-gain { font-size: 1.3rem; font-weight: 800; color: #34d399; font-variant-numeric: tabular-nums; }
+.mv-meta { font-size: 0.8rem; opacity: 0.7; }
+
+.hl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 0.8rem; }
+.hl { border: 1px solid rgba(128,128,128,0.28); border-radius: 16px; padding: 0.9rem 1.1rem; background: rgba(128,128,128,0.08); }
+.hl-icon { font-size: 1.5rem; }
+.hl-label { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.7; margin-top: 0.15rem; }
+.hl-value { font-size: 1.2rem; font-weight: 800; overflow-wrap: anywhere; line-height: 1.25; }
+.hl-sub { font-size: 0.82rem; opacity: 0.7; margin-top: 0.2rem; }
+.callout { border-left: 5px solid #f5c542; background: rgba(245,197,66,0.10); border-radius: 10px; padding: 0.65rem 1rem; margin: 0.45rem 0; }
+.callout.upset { border-left-color: #a78bfa; background: rgba(167,139,250,0.10); }
+
+.verdict { border-radius: 16px; padding: 1rem 1.3rem; margin: 0.6rem 0 0.9rem; text-align: center;
+  background: linear-gradient(120deg, rgba(56,189,248,0.20), rgba(52,211,153,0.14)); border: 1px solid rgba(128,128,128,0.25); }
+.verdict-big { font-size: 1.35rem; font-weight: 800; }
+.verdict-sub { opacity: 0.7; font-size: 0.85rem; margin-top: 0.15rem; }
+.tside { border: 1px solid rgba(128,128,128,0.28); border-radius: 16px; padding: 0.9rem 1.1rem; background: rgba(128,128,128,0.07); }
+.tside.win { border-color: #34d399; box-shadow: 0 0 0 1px #34d399 inset; }
+.tside-h { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.65; }
+.tside-team { font-size: 1.15rem; font-weight: 800; margin-bottom: 0.3rem; }
+.tside-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; border-top: 1px solid rgba(128,128,128,0.18); }
+.tside-row .p { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tside-total { margin-top: 0.5rem; display: flex; justify-content: space-between; align-items: baseline; border-top: 2px solid rgba(128,128,128,0.35); padding-top: 0.5rem; }
+.tside-total .big { font-size: 1.8rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+[data-testid="stExpander"] { border-radius: 14px; border-color: rgba(128,128,128,0.28); }
 </style>
 """
 
@@ -1303,6 +1360,303 @@ def style_fig(fig):
     )
     return fig
 
+
+
+# ---------------------------------------------------------------------
+# Full visual layer: podium, lineup cards, move cards, highlights, charts
+# ---------------------------------------------------------------------
+def _n(v, digits=1, signed=False) -> str:
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    try:
+        return f"{float(v):+.{digits}f}" if signed else f"{float(v):.{digits}f}"
+    except (TypeError, ValueError):
+        return html.escape(str(v))
+
+
+def _e(v) -> str:
+    return html.escape(str(v))
+
+
+def record_bar(wins, losses, ties) -> str:
+    wins, losses, ties = int(wins), int(losses), int(ties)
+    games = wins + losses + ties
+    label = f"{wins}-{losses}" + (f"-{ties}" if ties else "")
+    if games == 0:
+        return label
+    w, t = wins / games * 100, ties / games * 100
+    return (
+        '<div class="bar-cell" style="min-width:120px;">'
+        f'<span class="v" style="min-width:3.2rem;text-align:left;">{label}</span>'
+        '<div class="bar-track" style="display:flex;">'
+        f'<div style="width:{w:.1f}%;background:{WIN_COLOR};"></div>'
+        f'<div style="width:{t:.1f}%;background:{GRAY};"></div>'
+        f'<div style="width:{100 - w - t:.1f}%;background:{LOSS_COLOR};"></div></div></div>'
+    )
+
+
+def podium_html(df: pd.DataFrame) -> str:
+    medals = [("🥇", GOLD, "first"), ("🥈", SILVER, ""), ("🥉", BRONZE, "")]
+    cards = []
+    for i, (_, r) in enumerate(df.head(3).iterrows()):
+        icon, color, cls = medals[i]
+        rec = f'{int(r["Wins"])}-{int(r["Losses"])}' + (f'-{int(r["Ties"])}' if r["Ties"] else "")
+        owner = f'<div class="pod-sub">{_e(r["Owner"])}</div>' if r["Owner"] else ""
+        cards.append(
+            f'<div class="{("pod " + cls).strip()}" style="--medal:{color};">'
+            f'<div class="pod-medal">{icon}</div><div class="pod-team">{_e(r["Team"])}</div>{owner}'
+            f'<div class="pod-line"><span>Record</span><b>{rec}</b></div>'
+            f'<div class="pod-line"><span>Points For</span><b>{_n(r["Points For"])}</b></div></div>'
+        )
+    return f'<div class="podium">{"".join(cards)}</div>'
+
+
+def standings_view_df(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Rank": df["Rank"],
+            "Team": df["Team"],
+            "Owner": df["Owner"],
+            "Record": [record_bar(w, l, t) for w, l, t in zip(df["Wins"], df["Losses"], df["Ties"])],
+            "Points For": df["Points For"],
+            "Points Against": df["Points Against"],
+            "Streak": df["Streak"],
+        }
+    )
+
+
+def standings_table_html(df: pd.DataFrame, playoff_teams=None) -> str:
+    view = standings_view_df(df)
+    marks = {}
+    if isinstance(playoff_teams, int) and 0 < playoff_teams < len(view):
+        marks = {playoff_teams - 1: f"Playoff line · top {playoff_teams} advance"}
+    return html_table(
+        view,
+        pills={"Streak": streak_pill},
+        bars={
+            "Points For": (float(df["Points For"].max() or 1), ACCENT, float(df["Points For"].min()) * 0.85),
+            "Points Against": (float(df["Points Against"].max() or 1), "#f97316", float(df["Points Against"].min()) * 0.85),
+        },
+        raw_cols=("Record",),
+        marks=marks,
+    )
+
+
+def build_score_trend_chart(league):
+    """Weekly score per team, one line each. None before any game is played."""
+    played = max(
+        (i + 1 for t in league.teams for i, sc in enumerate(t.scores) if sc and sc > 0), default=0
+    )
+    if not played:
+        return None
+    rows = [
+        {"Team": t.team_name, "Week": wk, "Score": round(float(sc), 1)}
+        for t in league.teams
+        for wk, sc in enumerate(t.scores[:played], start=1)
+        if sc and sc > 0
+    ]
+    fig = px.line(
+        pd.DataFrame(rows), x="Week", y="Score", color="Team", markers=True,
+        color_discrete_sequence=PALETTE, title="Weekly Scores",
+    )
+    fig.update_xaxes(dtick=1)
+    fig.update_layout(height=420, margin=dict(l=0, r=10, t=60, b=10), legend_title_text="")
+    return style_fig(fig)
+
+
+def build_pf_pa_chart(df: pd.DataFrame):
+    """Points For vs. Points Against. Top-left = scoring a lot, allowing little."""
+    fig = px.scatter(
+        df, x="Points Against", y="Points For", text="Team", color="Wins",
+        color_continuous_scale=WIN_COLORSCALE,
+        range_color=(int(df["Wins"].min()), max(int(df["Wins"].max()), int(df["Wins"].min()) + 1)),
+        hover_data={"Wins": True, "Losses": True}, title="Points For vs. Points Against",
+    )
+    fig.update_traces(textposition="top center", marker=dict(size=14, line=dict(width=1, color="rgba(255,255,255,0.6)")))
+    fig.add_hline(y=float(df["Points For"].mean()), line_dash="dash", opacity=0.4)
+    fig.add_vline(x=float(df["Points Against"].mean()), line_dash="dash", opacity=0.4)
+    pad_x = (df["Points Against"].max() - df["Points Against"].min()) * 0.12 + 1
+    fig.update_xaxes(range=[df["Points Against"].min() - pad_x, df["Points Against"].max() + pad_x])
+    fig.update_layout(height=420, margin=dict(l=0, r=10, t=60, b=10), coloraxis_showscale=False)
+    return style_fig(fig)
+
+
+def lineup_cards_html(df: pd.DataFrame, week: int) -> str:
+    proj_col = f"Week {week} Proj"
+    starters = df[~df["Slot"].isin(["Bench", "IR"])]
+    bench = df[df["Slot"] == "Bench"]
+    ir = df[df["Slot"] == "IR"]
+
+    def card(r, muted=False):
+        status = normalize_status(r["Injury Status"])
+        color = STATUS_COLORS.get(status, GRAY)
+        badge = (
+            pill(status, color) if status != "ACTIVE"
+            else f'<span class="dot" title="ACTIVE" style="background:{color};"></span>'
+        )
+        sub = f'{_e(r["Position"])} · {_e(r["Pro Team"])}'
+        return (
+            f'<div class="lc{" muted" if muted else ""}"><div class="lc-top">'
+            f'<span class="lc-slot">{_e(r["Slot"]).upper()}</span>{badge}</div>'
+            f'<div class="lc-name">{_e(r["Player"])}</div><div class="lc-sub">{sub}</div>'
+            f'<div class="lc-bot"><span class="lc-proj">{_n(r[proj_col])}</span>'
+            f'<span class="lc-avg">avg {_n(r["Avg Points"])}</span></div></div>'
+        )
+
+    total = pd.to_numeric(starters[proj_col], errors="coerce").sum()
+    out = [f'<div class="lc-h">Starting lineup · {total:.1f} projected</div><div class="lc-grid">'
+           + "".join(card(r) for _, r in starters.iterrows()) + "</div>"]
+    if len(bench):
+        out.append('<div class="lc-h">Bench</div><div class="lc-grid">'
+                   + "".join(card(r, True) for _, r in bench.iterrows()) + "</div>")
+    if len(ir):
+        out.append('<div class="lc-h">Injured reserve</div><div class="lc-grid">'
+                   + "".join(card(r, True) for _, r in ir.iterrows()) + "</div>")
+    return "".join(out)
+
+
+def swap_cards_html(df: pd.DataFrame, week: int) -> str:
+    rows = []
+    for _, r in df.iterrows():
+        pin, pout = r.get(f"Wk {week} Proj (in)"), r.get(f"Wk {week} Proj (out)")
+        gain = (pin - pout) if pd.notna(pin) and pd.notna(pout) else None
+        rows.append(
+            '<div class="mv">'
+            f'<div class="mv-side mv-up"><span class="arr">▲</span><b>{_e(r["Bench → Start"] or "—")}</b>'
+            f'<span class="mv-p">{_n(pin)}</span></div>'
+            f'<div class="mv-side mv-down"><span class="arr">▼</span><span>{_e(r["Start → Bench"] or "—")}</span>'
+            f'<span class="mv-p">{_n(pout)}</span></div>'
+            f'<div class="mv-gain">{_n(gain, signed=True)}</div>'
+            f'<div class="mv-meta">{_e(r["Confidence"])}</div></div>'
+        )
+    return f'<div class="mv-list">{"".join(rows)}</div>'
+
+
+def fa_cards_html(df: pd.DataFrame, week: int) -> str:
+    rows = []
+    for _, r in df.iterrows():
+        owned = r.get("% Owned")
+        owned_txt = f" · {_n(owned, 0)}% owned" if pd.notna(owned) else ""
+        rows.append(
+            '<div class="mv">'
+            f'<div class="mv-side mv-up"><span class="arr">➕</span><b>{_e(r["Add (Free Agent)"])}</b>'
+            f'{status_pill(r["Injury Status"]) if normalize_status(r["Injury Status"]) != "ACTIVE" else ""}'
+            f'<span class="mv-p">{_n(r[f"Wk {week} Proj"])}</span></div>'
+            f'<div class="mv-side mv-down"><span class="arr">▼</span>'
+            f'<span>{_e(r["Replaces in Lineup"])} <span class="mv-meta">(starts at {_e(r["Starts At"])})</span></span>'
+            f'<span class="mv-p">{_n(r[f"Wk {week} Proj (out)"])}</span></div>'
+            f'<div class="mv-gain">{_n(r["Gain"], signed=True)}</div>'
+            f'<div class="mv-meta">{_e(r["Confidence"])}{owned_txt}</div></div>'
+        )
+    return f'<div class="mv-list">{"".join(rows)}</div>'
+
+
+def power_view_df(df: pd.DataFrame, prev: pd.DataFrame | None) -> pd.DataFrame:
+    """Power table with medal ranks, a movement column and a score bar."""
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    prev_rank = dict(zip(prev["Team"], prev["Rank"])) if prev is not None and not prev.empty else {}
+
+    def move(team, rank):
+        if team not in prev_rank:
+            return '<span style="opacity:0.5;">—</span>'
+        d = int(prev_rank[team]) - int(rank)
+        if d > 0:
+            return f'<span style="color:{WIN_COLOR};font-weight:700;">▲ {d}</span>'
+        if d < 0:
+            return f'<span style="color:{LOSS_COLOR};font-weight:700;">▼ {-d}</span>'
+        return '<span style="opacity:0.5;">–</span>'
+
+    out = df.copy()
+    out.insert(0, "Move", [move(t, r) for t, r in zip(out["Team"], out["Rank"])])
+    out["Rank"] = [f'{medals.get(int(r), "")} {int(r)}'.strip() for r in out["Rank"]]
+    return out
+
+
+def power_table_html(df: pd.DataFrame, prev: pd.DataFrame | None) -> str:
+    view = power_view_df(df, prev)
+    cols = ["Rank", "Move"] + [c for c in view.columns if c not in ("Rank", "Move")]
+    return html_table(
+        view[cols], raw_cols=("Rank", "Move"),
+        bars={"Power Score": (float(df["Power Score"].max() or 1), ACCENT, float(df["Power Score"].min()) * 0.8)}, precision=2,
+    )
+
+
+def diff_html(v) -> str:
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    color = WIN_COLOR if v > 0 else LOSS_COLOR if v < 0 else GRAY
+    return f'<b style="color:{color};">{float(v):+.1f}</b>'
+
+
+def trade_side_html(team_name, df_side, wk_col, favored: bool) -> str:
+    rows = "".join(
+        '<div class="tside-row">'
+        f'<span><b>{_e(r["Player"])}</b> <span class="mv-meta">{_e(r["Position"])} · {_e(r["Team (NFL)"])}</span></span>'
+        + (status_pill(r["Injury Status"]) if normalize_status(r["Injury Status"]) != "ACTIVE" else "")
+        + f'<span class="p">{_n(r[wk_col])}</span></div>'
+        for _, r in df_side.iterrows()
+    )
+    total = pd.to_numeric(df_side[wk_col], errors="coerce").sum()
+    avg = pd.to_numeric(df_side["Avg Points"], errors="coerce").sum()
+    season = pd.to_numeric(df_side["Season Proj"], errors="coerce").sum()
+    return (
+        f'<div class="tside{" win" if favored else ""}"><div class="tside-h">Gives up</div>'
+        f'<div class="tside-team">{_e(team_name)}</div>{rows}'
+        f'<div class="tside-total"><span class="mv-meta">Avg {avg:.1f}/wk · Season proj {season:.0f}</span>'
+        f'<span class="big">{total:.1f}</span></div></div>'
+    )
+
+
+def trade_verdict_html(a_name, b_name, a_gives, b_gives, week) -> str:
+    """Team A receives B's players. Positive diff favors A."""
+    diff = b_gives - a_gives
+    if abs(diff) < 0.05:
+        big, sub = "Dead even on projections", f"Week {week} projected points are equal on both sides"
+    else:
+        winner, loser = (a_name, b_name) if diff > 0 else (b_name, a_name)
+        big = f"{_e(winner)} comes out ahead by {abs(diff):.1f}"
+        sub = f"Week {week} projected points gained vs. {_e(loser)} (raw projections; ignores roster fit and bye weeks)"
+        return f'<div class="verdict"><div class="verdict-big">⚖️ {big}</div><div class="verdict-sub">{sub}</div></div>'
+    return f'<div class="verdict"><div class="verdict-big">⚖️ {big}</div><div class="verdict-sub">{sub}</div></div>'
+
+
+def highlight_cards_html(recap) -> str:
+    cards = []
+
+    def add(icon, label, value, sub):
+        cards.append(
+            f'<div class="hl"><div class="hl-icon">{icon}</div><div class="hl-label">{_e(label)}</div>'
+            f'<div class="hl-value">{_e(value)}</div><div class="hl-sub">{_e(sub)}</div></div>'
+        )
+
+    add("🔥", "Highest score", recap.highest["team"], f'{recap.highest["score"]:.1f} points')
+    add("🧊", "Lowest score", recap.lowest["team"], f'{recap.lowest["score"]:.1f} points')
+    if recap.narrowest:
+        g = recap.narrowest
+        add("😅", "Narrowest win", g["winner"], f'beat {g["loser"]} by {g["margin"]:.1f}')
+    if recap.widest:
+        g = recap.widest
+        add("💥", "Widest win", g["winner"], f'beat {g["loser"]} by {g["margin"]:.1f}')
+    if recap.luckiest:
+        r = recap.luckiest
+        add("🍀", "Luckiest", r["Team"], f'won with a {r["All-Play Record"]} all-play record')
+    if recap.unluckiest:
+        r = recap.unluckiest
+        add("😤", "Unluckiest", r["Team"], f'lost with a {r["All-Play Record"]} all-play record')
+    if recap.upsets:
+        u = recap.upsets[0]
+        add("⚡", "Upset of the week", u["winner"], f'beat {u["loser"]} as a {u["gap"]:.1f}-pt underdog')
+    return f'<div class="hl-grid">{"".join(cards)}</div>'
+
+
+def callouts_html(items: list, cls: str = "") -> str:
+    return "".join(f'<div class="callout {cls}">{t}</div>' for t in items)
+
+
+def diff_table_df(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["Diff (Actual − Proj)"] = out["Diff (Actual − Proj)"].map(diff_html)
+    return out
 
 
 @dataclass
@@ -1509,9 +1863,25 @@ def main():
         standings_df = build_standings_df(league)
         stat_cards(standings_summary(standings_df))
         st.write("")
-        show_table(standings_df, pills={"Streak": streak_pill})
+        st.html(podium_html(standings_df))
+        st.html(standings_table_html(
+            standings_df, getattr(league.settings, "playoff_team_count", None)
+        ))
         st.write("")
         st.plotly_chart(build_points_chart(standings_df), width="stretch")
+        trend_col, scatter_col = st.columns(2)
+        with trend_col:
+            trend_fig = build_score_trend_chart(league)
+            if trend_fig is not None:
+                st.plotly_chart(trend_fig, width="stretch")
+            else:
+                st.info("Weekly scores will chart here once games are played.")
+        with scatter_col:
+            st.plotly_chart(build_pf_pa_chart(standings_df), width="stretch")
+        st.caption(
+            "Points For vs. Points Against: top-left teams score a lot and allow little. "
+            "Dashed lines mark the league averages."
+        )
 
     # --- Rosters & Lineup Optimizer ---
     with tab2:
@@ -1537,7 +1907,9 @@ def main():
             )
 
         roster_df = build_roster_df(team, roster_week, lookup)
-        show_table(roster_df, pills={"Injury Status": status_pill})
+        st.html(lineup_cards_html(roster_df, roster_week))
+        with st.expander("Full roster table (season projection and averages)"):
+            show_table(roster_df, pills={"Injury Status": status_pill})
 
         st.subheader(f"Lineup Optimizer (Week {roster_week})")
         st.caption(
@@ -1587,7 +1959,7 @@ def main():
                 st.success("Your current lineup already matches the optimal lineup.")
             else:
                 st.write("Suggested swaps to reach the optimal lineup:")
-                show_table(res.swaps_df)
+                st.html(swap_cards_html(res.swaps_df, roster_week))
 
             st.subheader(f"Free Agent Upgrades (Week {roster_week})")
             if fa_candidates is None:
@@ -1607,7 +1979,7 @@ def main():
                         "in your optimal lineup this week."
                     )
                 else:
-                    show_table(res.fa_df, pills={"Injury Status": status_pill})
+                    st.html(fa_cards_html(res.fa_df, roster_week))
                 st.caption(
                     "Measured against your optimal lineup (after the swaps above), "
                     "using each position's top "
@@ -1630,10 +2002,11 @@ def main():
         matchup_rows = build_matchup_rows(league, int(week))
         stat_cards(matchup_summary(matchup_rows))
         st.write("")
-        st.html(matchups_html(matchup_rows))
+        st.html(matchups_html(matchup_rows, bar=True))
         st.caption(
             "Each score shows ESPN's projected score in gray parentheses, "
-            "then the actual score. The leading side is highlighted."
+            "then the actual score. The leading side is highlighted, and the bar "
+            "under each game shows each side's share of the combined projection."
         )
 
     # --- Power Rankings ---
@@ -1650,12 +2023,14 @@ def main():
         else:
             stat_cards(power_summary(pr_df))
             st.write("")
-            st.dataframe(
-                pr_df,
-                width="stretch",
-                hide_index=True,
-                height=fit_height(pr_df),
-            )
+            prev_df = None
+            if int(pr_week) > 1:
+                try:
+                    prev_df = build_power_rankings_df(league, int(pr_week) - 1)
+                except Exception:
+                    prev_df = None
+            st.html(power_table_html(pr_df, prev_df))
+            st.caption("Move = change in power rank since the previous week.")
             if not pr_df.attrs.get("formula_matches", True):
                 st.warning(
                     "The columns above don't exactly reproduce the Power Score, "
@@ -1687,7 +2062,16 @@ def main():
                 f"Showing up to {FREE_AGENT_LIST_SIZE} free agents (the most-owned "
                 f"first), sorted by their Week {int(fa_week)} projection."
             )
-            show_table(fa_df, pills={"Injury Status": status_pill}, max_height=700)
+            proj_col = f"Week {int(fa_week)} Proj"
+            show_table(
+                fa_df,
+                pills={"Injury Status": status_pill},
+                bars={
+                    proj_col: (float(fa_df[proj_col].max() or 1), ACCENT),
+                    "% Owned": (100.0, "#a78bfa"),
+                },
+                max_height=700,
+            )
 
     # --- Injury Report ---
     with tab6:
@@ -1719,7 +2103,12 @@ def main():
             if injury_df.empty:
                 st.success(f"No injuries on {inj_team} right now.")
             else:
-                show_table(injury_df, pills={"Status": status_pill})
+                for team_name_, grp in injury_df.groupby("Team", sort=False):
+                    with st.expander(f"{team_name_} · {len(grp)} flagged", expanded=True):
+                        show_table(
+                            grp.drop(columns="Team").reset_index(drop=True),
+                            pills={"Status": status_pill},
+                        )
 
     # --- Trade Analyzer ---
     with tab7:
@@ -1793,38 +2182,50 @@ def main():
                     frames.append(df_side)
             compare_df = pd.concat(frames, ignore_index=True)
 
+            a_name = by_key[pick_a[0]][1].team_name if pick_a else "Side 1"
+            b_name = by_key[pick_b[0]][1].team_name if pick_b else "Side 2"
+            sums = {
+                side: float(pd.to_numeric(compare_df[compare_df["Side"] == side][wk_col], errors="coerce").sum())
+                for side in ("Side 1", "Side 2")
+            }
+            both = bool(pick_a and pick_b)
+            if both:
+                st.html(trade_verdict_html(a_name, b_name, sums["Side 1"], sums["Side 2"], trade_week))
             tcol_a, tcol_b = st.columns(2)
-            for col, label_side, picks in ((tcol_a, "Side 1", pick_a), (tcol_b, "Side 2", pick_b)):
+            for col, side, name, other in ((tcol_a, "Side 1", a_name, "Side 2"), (tcol_b, "Side 2", b_name, "Side 1")):
                 with col:
-                    sub = compare_df[compare_df["Side"] == label_side].drop(columns="Side")
+                    sub = compare_df[compare_df["Side"] == side]
                     if sub.empty:
                         st.caption("No players selected yet.")
                         continue
-                    show_table(sub, pills={"Injury Status": status_pill})
-
-            if pick_a and pick_b:
-                tot = compare_df.groupby("Side")[[wk_col, "Avg Points", "Season Proj"]].sum(min_count=1)
-                st.markdown("**Totals (what each side gives up)**")
-                show_table(tot.reset_index().rename(columns={"Side": ""}))
-                a_name = by_key[pick_a[0]][1].team_name
-                b_name = by_key[pick_b[0]][1].team_name
-                gain_a = float(np.nan_to_num(tot.loc["Side 2", wk_col])) - float(
-                    np.nan_to_num(tot.loc["Side 1", wk_col])
-                )
-                m1, m2 = st.columns(2)
-                m1.metric(f"{a_name} — Week {trade_week} projected change", f"{gain_a:+.1f}")
-                m2.metric(f"{b_name} — Week {trade_week} projected change", f"{-gain_a:+.1f}")
-                st.caption(
-                    "Change = projected points of the players received minus the players given up. "
-                    "Raw projected points only; it doesn't account for roster fit or bye weeks."
-                )
+                    # the team that RECEIVES more projected points is favored
+                    favored = both and sums[other] > sums[side]
+                    st.html(trade_side_html(name, sub, wk_col, favored))
+            st.write("")
 
             fig = px.bar(
                 compare_df.assign(Owner=compare_df["Fantasy Owner"]),
                 x="Player", y=wk_col, color="Owner",
                 title=f"Week {trade_week} Projected Points",
+                color_discrete_sequence=PALETTE,
             )
-            st.plotly_chart(style_fig(fig), width="stretch")
+            chart_a, chart_b = st.columns(2)
+            with chart_a:
+                st.plotly_chart(style_fig(fig), width="stretch")
+            with chart_b:
+                if both:
+                    tot_rows = []
+                    for side, name in (("Side 1", a_name), ("Side 2", b_name)):
+                        sub = compare_df[compare_df["Side"] == side]
+                        tot_rows.append({"Team": name, "Metric": f"Week {trade_week} proj",
+                                         "Points": float(pd.to_numeric(sub[wk_col], errors="coerce").sum())})
+                        tot_rows.append({"Team": name, "Metric": "Avg points / week",
+                                         "Points": float(pd.to_numeric(sub["Avg Points"], errors="coerce").sum())})
+                    fig2 = px.bar(
+                        pd.DataFrame(tot_rows), x="Metric", y="Points", color="Team", barmode="group",
+                        title="Totals each side gives up", color_discrete_sequence=PALETTE,
+                    )
+                    st.plotly_chart(style_fig(fig2), width="stretch")
 
     # --- Weekly Recap ---
     with tab8:
@@ -1851,45 +2252,28 @@ def main():
             st.info("No completed results available for this week yet.")
         else:
             st.subheader(f"Week {recap_week} at a glance")
-            e = md_escape
-            lines = [
-                f"🔥 **Highest score:** {e(recap.highest['team'])} — {recap.highest['score']:.1f}",
-                f"🧊 **Lowest score:** {e(recap.lowest['team'])} — {recap.lowest['score']:.1f}",
-            ]
-            for icon, label, g in (("😅", "Narrowest win", recap.narrowest), ("💥", "Widest win", recap.widest)):
-                if g:
-                    lines.append(
-                        f"{icon} **{label}:** {e(g['winner'])} {g['winner_score']:.1f}, "
-                        f"{e(g['loser'])} {g['loser_score']:.1f} (by {g['margin']:.1f})"
-                    )
-            for icon, label, r, verb in (("🍀", "Luckiest", recap.luckiest, "won"),
-                                          ("😤", "Unluckiest", recap.unluckiest, "lost")):
-                if r:
-                    lines.append(
-                        f"{icon} **{label}:** {e(r['Team'])} {verb} with {r['Score']:.1f}, but would "
-                        f"have gone {r['All-Play Record']} vs. the whole league "
-                        f"({r['All-Play Win %']:.0f}% all-play win rate)"
-                    )
-            st.markdown("\n\n".join(lines))
+            st.html(highlight_cards_html(recap))
 
             if recap.records:
                 st.subheader("Record performances")
+                items = []
                 for r in recap.records:
                     kind = "Highest" if r["kind"] == "high" else "Lowest"
-                    st.markdown(
-                        f"🏆 **{kind} score in {r['scope']}:** {e(r['team'])} — {r['score']:.1f} "
-                        f"(previous {'record' if r['scope'] == 'league history' else 'mark this season'}: "
-                        f"{e(r['previous'])})"
+                    prev_label = "record" if r["scope"] == "league history" else "mark this season"
+                    items.append(
+                        f"🏆 <b>{kind} score in {_e(r['scope'])}:</b> {_e(r['team'])} — {r['score']:.1f} "
+                        f"(previous {prev_label}: {_e(r['previous'])})"
                     )
+                st.html(callouts_html(items))
 
             st.subheader("Upsets")
             if recap.upsets:
-                for u in recap.upsets:
-                    st.markdown(
-                        f"⚡ **{e(u['winner'])}** ({u['winner_score']:.1f}) beat **{e(u['loser'])}** "
-                        f"({u['loser_score']:.1f}) despite being projected lower "
-                        f"({u['winner_proj']:.1f} vs. {u['loser_proj']:.1f}, a {u['gap']:.1f}-point gap)"
-                    )
+                st.html(callouts_html([
+                    f"⚡ <b>{_e(u['winner'])}</b> ({u['winner_score']:.1f}) beat <b>{_e(u['loser'])}</b> "
+                    f"({u['loser_score']:.1f}) despite being projected lower "
+                    f"({u['winner_proj']:.1f} vs. {u['loser_proj']:.1f}, a {u['gap']:.1f}-point gap)"
+                    for u in recap.upsets
+                ], "upset"))
             else:
                 st.caption("No upsets: every team projected to win did win.")
 
@@ -1911,12 +2295,12 @@ def main():
                 col1, col2 = st.columns(2)
                 with col1:
                     st.write("**Biggest overperformers**")
-                    st.dataframe(recap_df.head(10), width="stretch", hide_index=True)
+                    show_table(diff_table_df(recap_df.head(10)), raw_cols=("Diff (Actual − Proj)",))
                 with col2:
                     st.write("**Biggest underperformers**")
-                    st.dataframe(
-                        recap_df.tail(10).sort_values(by="Diff (Actual − Proj)", ascending=True),
-                        width="stretch", hide_index=True,
+                    show_table(
+                        diff_table_df(recap_df.tail(10).sort_values(by="Diff (Actual − Proj)", ascending=True)),
+                        raw_cols=("Diff (Actual − Proj)",),
                     )
 
 
