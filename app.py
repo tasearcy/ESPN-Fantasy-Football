@@ -11,6 +11,7 @@ Run:   streamlit run app.py
 
 import html
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -38,6 +39,16 @@ NON_ACTIVE_STATUSES = {
 }
 # Players with these statuses can't play, so they're never recommended as pickups.
 UNAVAILABLE_STATUSES = {"OUT", "INJURED RESERVE", "SUSPENSION"}
+# Injury report sort order: least severe first, most severe last.
+STATUS_SEVERITY = {
+    "QUESTIONABLE": 1,
+    "DOUBTFUL": 2,
+    "OUT": 3,
+    "SUSPENSION": 4,
+    "PUP": 5,
+    "INJURED RESERVE": 6,
+}
+HISTORY_MAX_SEASONS = 10  # how far back the all-time league records look
 
 STATUS_COLORS = {
     "ACTIVE": "#2e9e4f",           # green
@@ -861,8 +872,19 @@ def build_injury_report_df(league: League, week: int, lookup: dict) -> pd.DataFr
                 )
     df = pd.DataFrame(rows)
     if not df.empty:
-        df = df.sort_values(by=["Status", "Team"]).reset_index(drop=True)
+        df = sort_injury_report(df)
     return df
+
+
+def sort_injury_report(df: pd.DataFrame) -> pd.DataFrame:
+    """Team name A-Z, then least severe status first, most severe last."""
+    df = df.assign(
+        _team=df["Team"].str.casefold(),
+        _sev=df["Status"].map(STATUS_SEVERITY).fillna(len(STATUS_SEVERITY) + 1),
+        _player=df["Player"].str.casefold(),
+    )
+    df = df.sort_values(by=["_team", "_sev", "_player"], kind="mergesort")
+    return df.drop(columns=["_team", "_sev", "_player"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------
@@ -875,6 +897,38 @@ def get_all_rostered_players(league: League):
         for player in team.roster:
             pairs.append((player, team))
     return pairs
+
+
+def trade_side_options(all_pairs: list, selected: list, other_team_id=None) -> tuple:
+    """Which players one side of a trade can pick from.
+
+    Before anything is picked, every rostered player is available (except the
+    other side's team, once that side is locked). After the first pick, the side
+    is locked to that player's fantasy team. Returns (player keys, team_id|None).
+    """
+    team_of = {_player_key(p): t.team_id for p, t in all_pairs}
+    locked = next((team_of[k] for k in selected if k in team_of), None)
+    if locked is not None:
+        keys = [_player_key(p) for p, t in all_pairs if t.team_id == locked]
+    else:
+        keys = [_player_key(p) for p, t in all_pairs if t.team_id != other_team_id]
+    return keys, locked
+
+
+def clean_trade_selection(all_pairs: list, sel_a: list, sel_b: list) -> tuple:
+    """Drops stale picks so each side only holds players from one team, and the
+    two sides never hold the same team. Side A wins a conflict."""
+    team_of = {_player_key(p): t.team_id for p, t in all_pairs}
+
+    def one_team(sel, banned=None):
+        sel = [k for k in sel if k in team_of and team_of[k] != banned]
+        if not sel:
+            return []
+        return [k for k in sel if team_of[k] == team_of[sel[0]]]
+
+    a = one_team(sel_a)
+    lock_a = team_of[a[0]] if a else None
+    return a, one_team(sel_b, banned=lock_a)
 
 
 def build_player_compare_df(players_with_teams, week: int, lookup: dict) -> pd.DataFrame:
@@ -900,14 +954,14 @@ def build_player_compare_df(players_with_teams, week: int, lookup: dict) -> pd.D
 # ---------------------------------------------------------------------
 # Weekly recap (actual vs. projected)
 # ---------------------------------------------------------------------
-def build_weekly_recap_df(league: League, week: int) -> pd.DataFrame:
+def build_weekly_recap_df(league: League, week: int, boxes=None) -> pd.DataFrame:
     """
     Compares each starter's actual points to their pre-game projection
     for a completed week, across the whole league, so you can see who
     beat or missed their number by the widest margin.
     """
     rows = []
-    for box in league.box_scores(week=week):
+    for box in (boxes if boxes is not None else league.box_scores(week=week)):
         for team, lineup in (
             (box.home_team, box.home_lineup),
             (box.away_team, box.away_lineup),
@@ -937,6 +991,163 @@ def build_weekly_recap_df(league: League, week: int) -> pd.DataFrame:
             drop=True
         )
     return df
+
+
+@dataclass
+class LeagueRecap:
+    week: int
+    completed: bool = False
+    highest: dict | None = None      # {"team", "score"}
+    lowest: dict | None = None
+    narrowest: dict | None = None    # {"winner", "loser", "winner_score", "loser_score", "margin"}
+    widest: dict | None = None
+    luckiest: dict | None = None     # a row of table below
+    unluckiest: dict | None = None
+    table: pd.DataFrame | None = None
+    upsets: list | None = None
+    records: list | None = None
+
+
+def _real_team(team) -> bool:
+    return team is not None and hasattr(team, "team_name")
+
+
+def build_league_recap(league: League, week: int, boxes=None, history_loader=None) -> LeagueRecap:
+    """League-wide story of one completed week: top and bottom scores, closest and
+    widest wins, luck (actual result vs. all-play record), projection upsets and
+    any season / league-history scoring records."""
+    boxes = boxes if boxes is not None else league.box_scores(week=week)
+    games = []
+    for box in boxes:
+        if not (_real_team(box.home_team) and _real_team(box.away_team)):
+            continue  # bye weeks
+        games.append(box)
+    rec = LeagueRecap(week=week, upsets=[], records=[])
+    if not games or all(not (b.home_score or b.away_score) for b in games):
+        return rec
+    rec.completed = True
+
+    scores = []  # (team_name, score, team)
+    for b in games:
+        scores.append((b.home_team.team_name, float(b.home_score), b.home_team))
+        scores.append((b.away_team.team_name, float(b.away_score), b.away_team))
+
+    top = max(scores, key=lambda x: x[1])
+    bottom = min(scores, key=lambda x: x[1])
+    rec.highest = {"team": top[0], "score": top[1]}
+    rec.lowest = {"team": bottom[0], "score": bottom[1]}
+
+    # Margins of victory (ties excluded) and result per team
+    result = {}
+    wins = []
+    for b in games:
+        h, a = float(b.home_score), float(b.away_score)
+        if h > a:
+            w, l, ws, ls = b.home_team, b.away_team, h, a
+        elif a > h:
+            w, l, ws, ls = b.away_team, b.home_team, a, h
+        else:
+            result[b.home_team.team_name] = result[b.away_team.team_name] = 0.5
+            continue
+        result[w.team_name], result[l.team_name] = 1.0, 0.0
+        wins.append({"winner": w.team_name, "loser": l.team_name,
+                     "winner_score": ws, "loser_score": ls, "margin": ws - ls})
+    if wins:
+        rec.narrowest = min(wins, key=lambda g: g["margin"])
+        rec.widest = max(wins, key=lambda g: g["margin"])
+
+    # All-play record: how each team's score would have done against everyone
+    rows = []
+    n = len(scores)
+    opp_of = {}
+    for b in games:
+        opp_of[b.home_team.team_name] = b.away_team.team_name
+        opp_of[b.away_team.team_name] = b.home_team.team_name
+    for name, sc, _ in scores:
+        w = sum(1 for o, s2, _ in scores if o != name and sc > s2)
+        t = sum(1 for o, s2, _ in scores if o != name and sc == s2)
+        l = (n - 1) - w - t
+        ap_pct = (w + 0.5 * t) / (n - 1) if n > 1 else 0.0
+        actual = result.get(name, 0.0)
+        rows.append({
+            "Team": name,
+            "Score": round(sc, 1),
+            "Opponent": opp_of[name],
+            "Result": {1.0: "W", 0.0: "L", 0.5: "T"}[actual],
+            "All-Play Record": f"{w}-{l}" + (f"-{t}" if t else ""),
+            "All-Play Win %": round(ap_pct * 100, 1),
+            "Luck": round((actual - ap_pct) * 100, 1),
+        })
+    table = pd.DataFrame(rows).sort_values(by="Luck", ascending=False, kind="mergesort").reset_index(drop=True)
+    rec.table = table
+    lucky = table.iloc[0]
+    unlucky = table.iloc[-1]
+    if lucky["Luck"] > 0:
+        rec.luckiest = lucky.to_dict()
+    if unlucky["Luck"] < 0:
+        rec.unluckiest = unlucky.to_dict()
+
+    # Upsets: the team with the lower projected total won
+    for b in games:
+        hp, ap = b.home_projected, b.away_projected
+        if hp is None or ap is None or abs(hp - ap) < 1e-9:
+            continue
+        h, a = float(b.home_score), float(b.away_score)
+        if h == a:
+            continue
+        fav_is_home = hp > ap
+        home_won = h > a
+        if fav_is_home != home_won:
+            w, l = (b.home_team, b.away_team) if home_won else (b.away_team, b.home_team)
+            wp, lp = (hp, ap) if home_won else (ap, hp)
+            ws, ls = (h, a) if home_won else (a, h)
+            rec.upsets.append({"winner": w.team_name, "loser": l.team_name,
+                               "winner_score": ws, "loser_score": ls,
+                               "winner_proj": float(wp), "loser_proj": float(lp),
+                               "gap": float(lp - wp)})
+    rec.upsets.sort(key=lambda u: -u["gap"])
+
+    # Scoring records: this season so far, then all-time (needs past seasons)
+    prior = [float(sc) for t in league.teams for sc in t.scores[: week - 1] if sc and sc > 0]
+    for kind, (name, sc, _) in (("high", top), ("low", bottom)):
+        better = (lambda x, y: x > y) if kind == "high" else (lambda x, y: x < y)
+        pick = max if kind == "high" else min
+        season_rec = (not prior) or better(sc, pick(prior))
+        if not season_rec:
+            continue
+        hist = history_loader() if history_loader else []
+        if hist:
+            best = pick(hist, key=lambda r: r["score"])
+            if better(sc, best["score"]):
+                rec.records.append({"kind": kind, "scope": "league history", "team": name, "score": sc,
+                                    "previous": f'{best["score"]:.1f} by {best["team"]} ({best["year"]})'})
+                continue
+        if prior:
+            rec.records.append({"kind": kind, "scope": "season", "team": name, "score": sc,
+                                "previous": f"{pick(prior):.1f}"})
+    return rec
+
+
+def md_escape(text) -> str:
+    """Team names are user-typed; keep Markdown/LaTeX characters literal."""
+    return re.sub(r"([\\`*_\[\]~$<>|#])", r"\\\1", str(text))
+
+
+@st.cache_data(show_spinner="Loading past seasons for league records...", ttl=24 * 60 * 60)
+def get_league_history_scores(league_id: int, year: int, espn_s2: str, swid: str) -> list:
+    """Every recorded team score from earlier seasons (newest first, stops at the
+    first season ESPN can't return). Used only for all-time record callouts."""
+    rows = []
+    for y in range(year - 1, year - 1 - HISTORY_MAX_SEASONS, -1):
+        try:
+            past = League(league_id=league_id, year=y, espn_s2=espn_s2, swid=swid)
+        except Exception:
+            break
+        for t in past.teams:
+            for wk, sc in enumerate(t.scores, start=1):
+                if sc and sc > 0:
+                    rows.append({"year": y, "week": wk, "team": t.team_name, "score": float(sc)})
+    return rows
 
 
 # ---------------------------------------------------------------------
@@ -1188,52 +1399,132 @@ def main():
         if injury_df.empty:
             st.success("No notable injuries reported across the league right now.")
         else:
-            st.dataframe(
-                styled(injury_df, status_cols=("Status",)),
-                width="stretch",
-                hide_index=True,
+            inj_team = dropdown(
+                "Team",
+                ["All"] + sorted(t.team_name for t in league.teams),
+                key="injury_team",
             )
+            if inj_team != "All":
+                injury_df = injury_df[injury_df["Team"] == inj_team].reset_index(drop=True)
+            st.caption(
+                "Sorted by team name, then status from least severe (top) to "
+                "most severe (bottom)."
+            )
+            if injury_df.empty:
+                st.success(f"No injuries on {inj_team} right now.")
+            else:
+                st.dataframe(
+                    styled(injury_df, status_cols=("Status",)),
+                    width="stretch",
+                    hide_index=True,
+                    height=fit_height(injury_df),
+                )
 
     # --- Trade Analyzer ---
     with tab7:
         trade_week = week_options[default_week_index]
         st.caption(
-            "Compare up to 4 rostered players side by side using ESPN's "
-            f"Week {trade_week} projection, season average and season-long "
-            "projection."
+            "Pick the players each side would give up. Once a player is chosen, "
+            "that side is locked to his fantasy team's roster, and the other "
+            f"side can only pick from other teams. Uses ESPN's Week {trade_week} "
+            "projection, season average and season-long projection."
         )
         trade_lookup = get_week_projection_lookup(
             league, int(league_id), int(year), trade_week
         )
         all_pairs = get_all_rostered_players(league)
-        player_names = sorted({p.name for p, _ in all_pairs})
+        by_key = {_player_key(p): (p, t) for p, t in all_pairs}
 
-        selected_names = st.multiselect(
-            "Select players to compare (2-4)",
-            player_names,
-            max_selections=4,
+        # Drop stale picks (e.g. after a roster refresh) BEFORE the widgets draw.
+        a_sel, b_sel = clean_trade_selection(
+            all_pairs,
+            st.session_state.get("trade_a", []),
+            st.session_state.get("trade_b", []),
         )
+        st.session_state["trade_a"], st.session_state["trade_b"] = a_sel, b_sel
+        a_opts, lock_a = trade_side_options(all_pairs, a_sel, None)
+        b_opts, lock_b = trade_side_options(all_pairs, b_sel, lock_a)
+        if lock_b is not None:  # A can't pick from the team B is locked to
+            a_opts, _ = trade_side_options(all_pairs, a_sel, lock_b)
+        team_names = {t.team_id: t.team_name for t in league.teams}
 
-        if len(selected_names) < 2:
-            st.info("Pick at least 2 players to compare.")
+        def player_label(locked):
+            def fmt(k):
+                p, t = by_key[k]
+                base = f"{p.name} ({p.position})"
+                return base if locked is not None else f"{base} — {t.team_name}"
+            return fmt
+
+        def order(keys):
+            return sorted(keys, key=lambda k: by_key[k][0].name.casefold())
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Trade partner 1 gives up**")
+            pick_a = st.multiselect(
+                "Players from side 1", order(a_opts), key="trade_a",
+                format_func=player_label(lock_a), label_visibility="collapsed",
+                placeholder="Choose players...",
+            )
+            if lock_a is not None:
+                st.caption(f"Locked to {team_names[lock_a]}'s roster")
+        with col_b:
+            st.markdown("**Trade partner 2 gives up**")
+            pick_b = st.multiselect(
+                "Players from side 2", order(b_opts), key="trade_b",
+                format_func=player_label(lock_b), label_visibility="collapsed",
+                placeholder="Choose players...",
+            )
+            if lock_b is not None:
+                st.caption(f"Locked to {team_names[lock_b]}'s roster")
+
+        if not pick_a and not pick_b:
+            st.info("Pick at least one player on each side to compare the trade.")
         else:
-            selected_pairs = [
-                (p, t) for p, t in all_pairs if p.name in selected_names
-            ]
-            compare_df = build_player_compare_df(
-                selected_pairs, trade_week, trade_lookup
-            )
-            st.dataframe(
-                styled(compare_df, status_cols=("Injury Status",)),
-                width="stretch",
-                hide_index=True,
-            )
+            wk_col = f"Week {trade_week} Proj"
+            frames = []
+            for label_side, picks in (("Side 1", pick_a), ("Side 2", pick_b)):
+                if picks:
+                    df_side = build_player_compare_df(
+                        [by_key[k] for k in picks if k in by_key], trade_week, trade_lookup
+                    )
+                    df_side.insert(0, "Side", label_side)
+                    frames.append(df_side)
+            compare_df = pd.concat(frames, ignore_index=True)
+
+            tcol_a, tcol_b = st.columns(2)
+            for col, label_side, picks in ((tcol_a, "Side 1", pick_a), (tcol_b, "Side 2", pick_b)):
+                with col:
+                    sub = compare_df[compare_df["Side"] == label_side].drop(columns="Side")
+                    if sub.empty:
+                        st.caption("No players selected yet.")
+                        continue
+                    st.dataframe(
+                        styled(sub, status_cols=("Injury Status",)),
+                        width="stretch", hide_index=True, height=fit_height(sub),
+                    )
+
+            if pick_a and pick_b:
+                tot = compare_df.groupby("Side")[[wk_col, "Avg Points", "Season Proj"]].sum(min_count=1)
+                st.markdown("**Totals (what each side gives up)**")
+                st.dataframe(tot.reset_index().rename(columns={"Side": ""}), width="stretch",
+                             hide_index=True, height=fit_height(tot))
+                a_name = by_key[pick_a[0]][1].team_name
+                b_name = by_key[pick_b[0]][1].team_name
+                gain_a = float(np.nan_to_num(tot.loc["Side 2", wk_col])) - float(
+                    np.nan_to_num(tot.loc["Side 1", wk_col])
+                )
+                m1, m2 = st.columns(2)
+                m1.metric(f"{a_name} — Week {trade_week} projected change", f"{gain_a:+.1f}")
+                m2.metric(f"{b_name} — Week {trade_week} projected change", f"{-gain_a:+.1f}")
+                st.caption(
+                    "Change = projected points of the players received minus the players given up. "
+                    "Raw projected points only; it doesn't account for roster fit or bye weeks."
+                )
 
             fig = px.bar(
-                compare_df,
-                x="Player",
-                y=f"Week {trade_week} Proj",
-                color="Position",
+                compare_df.assign(Owner=compare_df["Fantasy Owner"]),
+                x="Player", y=wk_col, color="Owner",
                 title=f"Week {trade_week} Projected Points",
             )
             st.plotly_chart(fig, width="stretch")
@@ -1241,8 +1532,9 @@ def main():
     # --- Weekly Recap ---
     with tab8:
         st.caption(
-            "For a completed week, shows which starters beat or missed "
-            "their projection by the widest margin, league-wide."
+            "A league-wide story of a completed week: top and bottom scores, "
+            "closest and widest wins, luck, upsets, records, and which starters "
+            "beat or missed their projection by the widest margin."
         )
         recap_week = dropdown(
             "Week",
@@ -1250,26 +1542,85 @@ def main():
             index=max(default_week_index - 1, 0),  # default to last completed week
             key="recap_week",
         )
-        recap_df = build_weekly_recap_df(league, int(recap_week))
+        recap_boxes = league.box_scores(week=int(recap_week))
+        recap = build_league_recap(
+            league, int(recap_week), boxes=recap_boxes,
+            history_loader=lambda: get_league_history_scores(
+                int(league_id), int(year), espn_s2, swid
+            ),
+        )
 
-        if recap_df.empty:
+        if not recap.completed:
             st.info("No completed results available for this week yet.")
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**Biggest overperformers**")
-                st.dataframe(
-                    recap_df.head(10), width="stretch", hide_index=True
+            st.subheader(f"Week {recap_week} at a glance")
+            e = md_escape
+            lines = [
+                f"🔥 **Highest score:** {e(recap.highest['team'])} — {recap.highest['score']:.1f}",
+                f"🧊 **Lowest score:** {e(recap.lowest['team'])} — {recap.lowest['score']:.1f}",
+            ]
+            for icon, label, g in (("😅", "Narrowest win", recap.narrowest), ("💥", "Widest win", recap.widest)):
+                if g:
+                    lines.append(
+                        f"{icon} **{label}:** {e(g['winner'])} {g['winner_score']:.1f}, "
+                        f"{e(g['loser'])} {g['loser_score']:.1f} (by {g['margin']:.1f})"
+                    )
+            for icon, label, r, verb in (("🍀", "Luckiest", recap.luckiest, "won"),
+                                          ("😤", "Unluckiest", recap.unluckiest, "lost")):
+                if r:
+                    lines.append(
+                        f"{icon} **{label}:** {e(r['Team'])} {verb} with {r['Score']:.1f}, but would "
+                        f"have gone {r['All-Play Record']} vs. the whole league "
+                        f"({r['All-Play Win %']:.0f}% all-play win rate)"
+                    )
+            st.markdown("\n\n".join(lines))
+
+            if recap.records:
+                st.subheader("Record performances")
+                for r in recap.records:
+                    kind = "Highest" if r["kind"] == "high" else "Lowest"
+                    st.markdown(
+                        f"🏆 **{kind} score in {r['scope']}:** {e(r['team'])} — {r['score']:.1f} "
+                        f"(previous {'record' if r['scope'] == 'league history' else 'mark this season'}: "
+                        f"{e(r['previous'])})"
+                    )
+
+            st.subheader("Upsets")
+            if recap.upsets:
+                for u in recap.upsets:
+                    st.markdown(
+                        f"⚡ **{e(u['winner'])}** ({u['winner_score']:.1f}) beat **{e(u['loser'])}** "
+                        f"({u['loser_score']:.1f}) despite being projected lower "
+                        f"({u['winner_proj']:.1f} vs. {u['loser_proj']:.1f}, a {u['gap']:.1f}-point gap)"
+                    )
+            else:
+                st.caption("No upsets: every team projected to win did win.")
+
+            with st.expander("All-play results and luck for every team"):
+                st.caption(
+                    "All-play record = how the team's score ranks against every other team that week. "
+                    "Luck = actual result (win 100, tie 50, loss 0) minus all-play win %."
                 )
-            with col2:
-                st.write("**Biggest underperformers**")
                 st.dataframe(
-                    recap_df.tail(10).sort_values(
-                        by="Diff (Actual − Proj)", ascending=True
-                    ),
-                    width="stretch",
-                    hide_index=True,
+                    styled(recap.table), width="stretch", hide_index=True,
+                    height=fit_height(recap.table),
                 )
+
+            recap_df = build_weekly_recap_df(league, int(recap_week), boxes=recap_boxes)
+            st.subheader("Player performance vs. projection")
+            if recap_df.empty:
+                st.info("No player-level projections are available for this week.")
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**Biggest overperformers**")
+                    st.dataframe(recap_df.head(10), width="stretch", hide_index=True)
+                with col2:
+                    st.write("**Biggest underperformers**")
+                    st.dataframe(
+                        recap_df.tail(10).sort_values(by="Diff (Actual − Proj)", ascending=True),
+                        width="stretch", hide_index=True,
+                    )
 
 
 if __name__ == "__main__":
