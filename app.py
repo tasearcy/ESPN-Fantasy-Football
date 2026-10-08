@@ -9,27 +9,45 @@ Setup: see README.md
 Run:   streamlit run app.py
 """
 
+import html
 import os
+from dataclasses import dataclass
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
 from espn_api.football import League
+from scipy.optimize import linear_sum_assignment
 
 load_dotenv()
 
 st.set_page_config(page_title="ESPN Fantasy Dashboard", layout="wide")
 
+# Injury statuses, after normalize_status() (ESPN's INJURY_RESERVE shows up
+# as "INJURED RESERVE").
 NON_ACTIVE_STATUSES = {
     "QUESTIONABLE",
     "DOUBTFUL",
     "OUT",
-    "INJURY_RESERVE",
+    "INJURED RESERVE",
     "SUSPENSION",
     "PUP",
 }
+# Players with these statuses can't play, so they're never recommended as pickups.
+UNAVAILABLE_STATUSES = {"OUT", "INJURED RESERVE", "SUSPENSION"}
+
+STATUS_COLORS = {
+    "ACTIVE": "#2e9e4f",           # green
+    "QUESTIONABLE": "#e0b400",     # yellow
+    "DOUBTFUL": "#f28c28",         # orange
+    "OUT": "#ff2b2b",              # bright red
+    "INJURED RESERVE": "#9b1c1c",  # dark red / maroon
+}
+WIN_COLOR = "#2e9e4f"
+LOSS_COLOR = "#e03131"
 
 
 # ---------------------------------------------------------------------
@@ -39,6 +57,8 @@ NON_ACTIVE_STATUSES = {
 # which is what actually pulls fresh rosters/waivers from ESPN. Without a
 # ttl, cache_resource holds the same connection (and its stale data) forever.
 LEAGUE_CACHE_TTL_SECONDS = 30 * 60  # 30 minutes
+FREE_AGENT_LIST_SIZE = 100  # names shown on the Free Agents tab (was 50)
+FREE_AGENTS_PER_POSITION = 50  # pool per position for the lineup optimizer
 
 
 @st.cache_resource(show_spinner="Connecting to ESPN...", ttl=LEAGUE_CACHE_TTL_SECONDS)
@@ -73,6 +93,7 @@ def load_credentials():
     if st.sidebar.button("🔄 Refresh Data Now"):
         get_league.clear()
         get_week_projection_lookup.clear()
+        get_free_agent_pool.clear()
         st.rerun()
     st.sidebar.caption(
         "Data auto-refreshes every 30 min. Use the button above right "
@@ -120,6 +141,46 @@ def dropdown(label, options, container=st, **kwargs):
 def fit_height(df, row_px: int = 35) -> int:
     """Pixel height that shows every row (plus header) with no scrolling."""
     return (len(df) + 1) * row_px + 3
+
+
+def normalize_status(raw) -> str:
+    """ESPN injury status -> display label. INJURY_RESERVE becomes
+    INJURED RESERVE; a missing status means ACTIVE."""
+    text = str(raw).strip().upper().replace("_", " ") if raw else "ACTIVE"
+    if text in ("INJURY RESERVE", "INJURED RESERVE"):
+        return "INJURED RESERVE"
+    return text or "ACTIVE"
+
+
+def _status_css(value) -> str:
+    color = STATUS_COLORS.get(value)
+    return f"color: {color}; font-weight: 600" if color else ""
+
+
+def _streak_css(value) -> str:
+    text = str(value).upper()
+    if text.startswith("WIN"):
+        return f"color: {WIN_COLOR}; font-weight: 600"
+    if text.startswith("LOSS"):
+        return f"color: {LOSS_COLOR}; font-weight: 600"
+    return ""
+
+
+def styled(df, status_cols=(), streak_col=None):
+    """A pandas Styler for st.dataframe: injury statuses and win/loss streaks
+    are colored, numbers show one decimal and missing values show a dash."""
+    sty = df.style.format(precision=1, na_rep="—")
+    # Styler.map replaced applymap in pandas 2.1; support both.
+    def apply_css(sty, func, cols):
+        mapper = sty.map if hasattr(sty, "map") else sty.applymap
+        return mapper(func, subset=cols)
+
+    cols = [c for c in status_cols if c in df.columns]
+    if cols:
+        sty = apply_css(sty, _status_css, cols)
+    if streak_col and streak_col in df.columns:
+        sty = apply_css(sty, _streak_css, [streak_col])
+    return sty
 
 
 def get_season_proj_points(player):
@@ -214,6 +275,50 @@ def build_standings_df(league: League) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+# Red (fewest wins) -> green (most wins), with strong mid-tones so
+# neighbouring win totals are easy to tell apart.
+WIN_COLORSCALE = [
+    [0.00, "#d62728"],
+    [0.25, "#ff8c1a"],
+    [0.50, "#f2d600"],
+    [0.75, "#8cc63f"],
+    [1.00, "#1a9850"],
+]
+
+
+def build_points_chart(standings_df: pd.DataFrame):
+    """Horizontal bars: most points at the top, colored by wins
+    (green = most wins, red = fewest)."""
+    df = standings_df.sort_values("Points For", ascending=False, kind="stable")
+    lo, hi = int(df["Wins"].min()), int(df["Wins"].max())
+    if lo == hi:  # everyone tied (e.g. before the first game): avoid a flat scale
+        lo, hi = lo - 1, hi + 1
+
+    fig = px.bar(
+        df,
+        x="Points For",
+        y="Team",
+        orientation="h",
+        color="Wins",
+        color_continuous_scale=WIN_COLORSCALE,
+        range_color=(lo, hi),
+        category_orders={"Team": list(df["Team"])},
+        hover_data={"Wins": True, "Losses": True, "Points For": ":.1f"},
+        title="Points For by Team",
+    )
+    fig.update_traces(
+        texttemplate="%{x:.1f}", textposition="outside", cliponaxis=False
+    )
+    fig.update_yaxes(title=None)  # px already lists the first category at the top
+    fig.update_xaxes(range=[0, float(df["Points For"].max()) * 1.12 or 1])
+    fig.update_layout(
+        height=max(320, 42 * len(df) + 110),
+        margin=dict(l=0, r=10, t=50, b=10),
+        coloraxis_colorbar=dict(title="Wins", tickmode="linear", tick0=lo, dtick=1),
+    )
+    return fig
+
+
 def build_roster_df(team, week: int, lookup: dict) -> pd.DataFrame:
     """Roster in ESPN's slot order (QB, RB, WR, TE, FLEX, DP, K, Bench, IR).
     Players keep ESPN's own order within a slot."""
@@ -230,7 +335,7 @@ def build_roster_df(team, week: int, lookup: dict) -> pd.DataFrame:
                 week_col: _safe_round(get_week_proj_points(player, week, lookup)),
                 "Avg Points": _safe_round(get_avg_points(player)),
                 "Season Proj": _safe_round(get_season_proj_points(player)),
-                "Injury Status": getattr(player, "injuryStatus", "ACTIVE"),
+                "Injury Status": normalize_status(getattr(player, "injuryStatus", None)),
             }
         )
     df = pd.DataFrame(rows)
@@ -243,18 +348,65 @@ def build_roster_df(team, week: int, lookup: dict) -> pd.DataFrame:
     return df
 
 
-def build_matchup_df(league: League, week: int) -> pd.DataFrame:
-    rows = []
-    for box in league.box_scores(week=week):
-        rows.append(
-            {
-                "Away Team": box.away_team.team_name if box.away_team else "BYE",
-                "Away Score": round(box.away_score, 1) if box.away_team else None,
-                "Home Team": box.home_team.team_name if box.home_team else "BYE",
-                "Home Score": round(box.home_score, 1) if box.home_team else None,
-            }
-        )
-    return pd.DataFrame(rows)
+GRAY = "#9aa0a6"
+
+
+def build_matchup_rows(league: League, week: int) -> list:
+    """One dict per game: each side has team, score and ESPN's projected score."""
+    def side(team, score, projected):
+        if team is None:
+            return {"team": "BYE", "score": None, "proj": None}
+        return {"team": team.team_name, "score": score, "proj": projected}
+
+    return [
+        {
+            "away": side(box.away_team, box.away_score, box.away_projected),
+            "home": side(box.home_team, box.home_score, box.home_projected),
+        }
+        for box in league.box_scores(week=week)
+    ]
+
+
+def matchups_html(rows: list) -> str:
+    """Matchup table where each score cell reads "(projected) actual", with the
+    projection in lighter gray to the left of the actual score. A dataframe
+    can't color part of a cell, so this is a small HTML table; inline styles
+    only, and team names are escaped."""
+    th = "padding:0.5rem 0.75rem;border-bottom:1px solid rgba(128,128,128,0.4);font-weight:600;"
+    td = "padding:0.5rem 0.75rem;border-bottom:1px solid rgba(128,128,128,0.2);"
+
+    def score_cell(side):
+        style = td + "text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;"
+        if side["score"] is None:
+            return f'<td style="{style}">—</td>'
+        proj = ""
+        if isinstance(side["proj"], (int, float)):
+            proj = (
+                f'<span style="color:{GRAY};font-weight:400;margin-right:0.6em;">'
+                f'({side["proj"]:.1f})</span>'
+            )
+        return f'<td style="{style}">{proj}{side["score"]:.1f}</td>'
+
+    def team_cell(side):
+        return f'<td style="{td}">{html.escape(str(side["team"]))}</td>'
+
+    head = (
+        f'<tr><th style="{th}text-align:left;">Away Team</th>'
+        f'<th style="{th}text-align:right;">Away Score</th>'
+        f'<th style="{th}text-align:left;">Home Team</th>'
+        f'<th style="{th}text-align:right;">Home Score</th></tr>'
+    )
+    body = "".join(
+        "<tr>"
+        + team_cell(r["away"]) + score_cell(r["away"])
+        + team_cell(r["home"]) + score_cell(r["home"])
+        + "</tr>"
+        for r in rows
+    )
+    return (
+        '<table style="width:100%;border-collapse:collapse;font-size:0.95rem;">'
+        f"<thead>{head}</thead><tbody>{body}</tbody></table>"
+    )
 
 
 POWER_WEIGHTS = {"dominance": 0.80, "avg_score": 0.15, "avg_mov": 0.05}
@@ -337,108 +489,322 @@ def build_power_rankings_df(league: League, week: int) -> pd.DataFrame:
 # ---------------------------------------------------------------------
 # Lineup optimizer
 # ---------------------------------------------------------------------
-def optimize_lineup(league: League, team, week: int, lookup: dict):
+@dataclass(frozen=True)
+class Candidate:
+    """A player being considered for a starting slot (rostered or free agent)."""
+    key: object
+    name: str
+    position: str
+    eligible: frozenset          # lineup slots this player is allowed to fill
+    proj: float                  # projection for the selected week (0.0 if none)
+    has_proj: bool = True
+    status: str = "ACTIVE"
+    current_slot: object = None  # None for free agents
+    percent_owned: object = None
+    is_fa: bool = False
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} ({self.position})"
+
+
+def _player_key(p):
+    pid = getattr(p, "playerId", None)
+    return pid if pid is not None else p.name
+
+
+def _confidence(gap: float) -> str:
+    if gap >= 4:
+        return "🟢 Strong"
+    if gap >= 1.5:
+        return "🟡 Moderate"
+    return "🟠 Close call"
+
+
+def roster_candidates(team, week: int, lookup: dict) -> list:
+    out = []
+    for p in team.roster:
+        proj = get_week_proj_points(p, week, lookup)
+        out.append(
+            Candidate(
+                key=_player_key(p),
+                name=p.name,
+                position=p.position,
+                eligible=frozenset(getattr(p, "eligibleSlots", None) or []),
+                proj=proj if proj is not None else 0.0,
+                has_proj=proj is not None,
+                status=normalize_status(getattr(p, "injuryStatus", None)),
+                current_slot=p.lineupSlot,
+            )
+        )
+    return out
+
+
+def starting_slots(league: League) -> list:
+    """One entry per starting spot, e.g. ["QB", "RB", "RB", "WR", ..., "DP", "K"]."""
+    counts = dict(getattr(league.settings, "position_slot_counts", None) or {})
+    slots = []
+    for name, n in counts.items():
+        if name not in ("BE", "IR"):
+            slots.extend([name] * int(n))
+    return slots
+
+
+_BIG = 1e6          # cost of an illegal slot/player pairing
+_KEEP_BONUS = 1e-6  # tie-break: keep players already in the lineup
+
+
+def best_lineup(slots: list, candidates: list, prefer=frozenset()) -> list:
     """
-    Greedy lineup optimizer: fills the most restrictive slots first
-    (single-position slots before flex-type slots), always taking the
-    highest WEEKLY-projected eligible player left. Season-long numbers
-    are never used, since they ignore this week's matchup, bye and
-    injury situation.
+    Highest-scoring way to fill the starting slots, as [(slot, Candidate)].
 
-    Players with no weekly projection are ranked as 0.0 so they never
-    get promoted on a guess; their names are returned so the UI can
-    flag them. Returns:
-      current_total, optimal_total, swaps_df, missing_names
+    This is an assignment problem solved exactly (not greedily): a player can
+    only fill a slot he is eligible for (a QB can never take an RB slot) and
+    each player is used at most once. FLEX-style slots are handled correctly
+    because eligibility is checked per slot. Slots nobody is eligible for stay
+    empty. `prefer` lists keys of players to keep when projections tie, so the
+    tool doesn't suggest pointless swaps.
     """
-    def wp(p):
-        val = get_week_proj_points(p, week, lookup)
-        return val if val is not None else 0.0
-
-    slot_counts = dict(getattr(league.settings, "position_slot_counts", {}))
-    slot_counts.pop("BE", None)
-    slot_counts.pop("IR", None)
-
-    def slot_sort_key(slot_name):
-        is_flex = "/" in slot_name or slot_name.upper() in ("FLEX", "OP", "UTIL", "DP")
-        return (1 if is_flex else 0, slot_name)
-
-    ordered_slots = sorted(slot_counts.keys(), key=slot_sort_key)
-
-    available = list(team.roster)
-    assigned = []  # (slot, player)
-
-    for slot_name in ordered_slots:
-        count = slot_counts[slot_name]
-        for _ in range(count):
-            eligible = [
-                p for p in available if slot_name in getattr(p, "eligibleSlots", [])
-            ]
-            if not eligible:
-                continue
-            best = max(eligible, key=wp)
-            assigned.append((slot_name, best))
-            available.remove(best)
-
-    optimal_total = sum(wp(p) for _, p in assigned)
-    optimal_names = {p.name for _, p in assigned}
-
-    current_starters = [p for p in team.roster if p.lineupSlot not in ("BE", "IR")]
-    current_total = sum(wp(p) for p in current_starters)
-    current_names = {p.name for p in current_starters}
-
-    # Only players who matter to the decision (starters or optimal picks)
-    # need a weekly number; bench players left on the bench don't.
-    relevant = {p.name: p for p in current_starters}
-    relevant.update({p.name: p for _, p in assigned})
-    missing_names = sorted(
-        name
-        for name, p in relevant.items()
-        if get_week_proj_points(p, week, lookup) is None
-    )
-
-    bench_but_should_start = [p for _, p in assigned if p.name not in current_names]
-    starting_but_should_bench = [
-        p for p in current_starters if p.name not in optimal_names
+    if not slots or not candidates:
+        return []
+    cost = np.full((len(slots), len(candidates)), _BIG)
+    for i, slot in enumerate(slots):
+        for j, c in enumerate(candidates):
+            if slot in c.eligible:
+                cost[i, j] = -(c.proj + (_KEEP_BONUS if c.key in prefer else 0.0))
+    rows, cols = linear_sum_assignment(cost)
+    return [
+        (slots[i], candidates[j])
+        for i, j in zip(rows, cols)
+        if cost[i, j] < _BIG / 2
     ]
 
+
+def pair_swaps(ins: list, outs: list) -> list:
+    """Match each player coming into the lineup with one going out, preferring
+    the same position, then a shared lineup slot, so each row reads sensibly."""
+    if not ins or not outs:
+        return [(i, None) for i in ins] + [(None, o) for o in outs]
+    score = np.zeros((len(ins), len(outs)))
+    for a, i in enumerate(ins):
+        for b, o in enumerate(outs):
+            if i.position == o.position:
+                score[a, b] = 100
+            elif (i.eligible & o.eligible) - {"BE", "IR"}:
+                score[a, b] = 10
+    rows, cols = linear_sum_assignment(-score)
+    matched = dict(zip(rows, cols))
+    pairs = [(i, outs[matched[a]] if a in matched else None) for a, i in enumerate(ins)]
+    pairs += [(None, o) for b, o in enumerate(outs) if b not in set(matched.values())]
+    pairs.sort(key=lambda p: -((p[0].proj if p[0] else 0.0) - (p[1].proj if p[1] else 0.0)))
+    return pairs
+
+
+def free_agent_upgrades(slots, roster, free_agents, lineup, week, max_pickups=5, min_gain=0.05):
+    """
+    Pickups that raise the projected lineup total, best first.
+
+    Each step finds the single free agent whose addition raises the optimal
+    lineup the most, then adds him and repeats. Because every candidate is
+    scored by re-solving the constrained lineup, a pickup only helps if he can
+    legally fill a slot: a QB can bump a QB (or fill an OP slot if the league
+    has one) but never an RB. Returns (rows, total_with_pickups).
+    """
+    pool = list(roster)
+    total = sum(c.proj for _, c in lineup)
+    remaining = [fa for fa in free_agents if fa.has_proj and fa.status not in UNAVAILABLE_STATUSES]
+    rows = []
+
+    for _ in range(max_pickups):
+        keys = {c.key for _, c in lineup}
+        full = len(lineup) == len(slots)
+        # A free agent can't beat the weakest player in a full lineup unless he
+        # projects higher than that player, so skip the rest cheaply.
+        floor = min((c.proj for _, c in lineup), default=0.0) if full else float("-inf")
+
+        best = None
+        for fa in remaining:
+            if fa.proj - floor <= min_gain:
+                continue
+            trial = best_lineup(slots, pool + [fa], prefer=keys)
+            gain = sum(c.proj for _, c in trial) - total
+            if best is None or gain > best[0]:
+                best = (gain, fa, trial)
+        if best is None or best[0] < min_gain:
+            break
+
+        gain, fa, trial = best
+        trial_keys = {c.key for _, c in trial}
+        bumped = sorted((c for _, c in lineup if c.key not in trial_keys), key=lambda c: c.proj)
+        out = bumped[0] if bumped else None
+        slot = next(s for s, c in trial if c.key == fa.key)
+
+        owned = fa.percent_owned if isinstance(fa.percent_owned, (int, float)) and fa.percent_owned >= 0 else None
+        rows.append(
+            {
+                "Add (Free Agent)": fa.label,
+                f"Wk {week} Proj": _safe_round(fa.proj),
+                "Injury Status": fa.status,
+                "Starts At": SLOT_LABELS.get(slot, slot),
+                "Replaces in Lineup": out.label if out else "— (open slot)",
+                f"Wk {week} Proj (out)": _safe_round(out.proj) if out else None,
+                "Gain": _safe_round(gain),
+                "Confidence": _confidence(gain),
+                "% Owned": _safe_round(owned),
+            }
+        )
+        pool.append(fa)
+        remaining = [r for r in remaining if r.key != fa.key]
+        lineup, total = trial, total + gain
+
+    return rows, total
+
+
+@dataclass
+class LineupResult:
+    current_total: float
+    optimal_total: float
+    swaps_df: pd.DataFrame
+    missing: list
+    fa_total: object  # None when free agents weren't considered
+    fa_df: pd.DataFrame
+
+
+def optimize_lineup(league: League, team, week: int, lookup: dict, free_agents=None) -> LineupResult:
+    """
+    Best lineup for one week using ESPN's WEEKLY projections (never the
+    season-long total), respecting every slot's eligibility. Compares it with
+    the current lineup, lists the roster swaps, and (when `free_agents` is
+    given) finds free-agent pickups that would raise the total further.
+
+    Players with no weekly projection count as 0.0 so they're never promoted
+    on a guess; their names are returned in `missing` so the UI can flag them.
+    """
+    slots = starting_slots(league)
+    roster = roster_candidates(team, week, lookup)
+
+    current = [c for c in roster if c.current_slot not in (None, "BE", "IR")]
+    current_keys = {c.key for c in current}
+    current_total = sum(c.proj for c in current)
+
+    optimal = best_lineup(slots, roster, prefer=current_keys)
+    optimal_total = sum(c.proj for _, c in optimal)
+    optimal_keys = {c.key for _, c in optimal}
+
+    ins = [c for _, c in optimal if c.key not in current_keys]
+    outs = [c for c in current if c.key not in optimal_keys]
+
     swap_rows = []
-    for i in range(max(len(bench_but_should_start), len(starting_but_should_bench))):
-        bench_player = (
-            bench_but_should_start[i] if i < len(bench_but_should_start) else None
-        )
-        start_player = (
-            starting_but_should_bench[i] if i < len(starting_but_should_bench) else None
-        )
-
-        proj_in = wp(bench_player) if bench_player else 0.0
-        proj_out = wp(start_player) if start_player else 0.0
-        gap = proj_in - proj_out
-
-        if gap >= 4:
-            confidence = "🟢 Strong"
-        elif gap >= 1.5:
-            confidence = "🟡 Moderate"
-        else:
-            confidence = "🟠 Close call"
-
+    for c_in, c_out in pair_swaps(ins, outs):
+        gap = (c_in.proj if c_in else 0.0) - (c_out.proj if c_out else 0.0)
         swap_rows.append(
             {
-                "Bench → Start": bench_player.name if bench_player else "",
-                f"Wk {week} Proj (in)": _safe_round(proj_in) if bench_player else None,
-                "Start → Bench": start_player.name if start_player else "",
-                f"Wk {week} Proj (out)": _safe_round(proj_out) if start_player else None,
-                "Confidence": confidence,
+                "Bench → Start": c_in.label if c_in else "",
+                f"Wk {week} Proj (in)": _safe_round(c_in.proj) if c_in else None,
+                "Start → Bench": c_out.label if c_out else "",
+                f"Wk {week} Proj (out)": _safe_round(c_out.proj) if c_out else None,
+                "Confidence": _confidence(gap),
             }
         )
 
-    swaps_df = pd.DataFrame(swap_rows)
-    return current_total, optimal_total, swaps_df, missing_names
+    # Only players who matter to the decision need a weekly number.
+    relevant = {c.key: c for c in current}
+    relevant.update({c.key: c for _, c in optimal})
+    missing = sorted(c.name for c in relevant.values() if not c.has_proj)
+
+    fa_rows, fa_total = [], None
+    if free_agents is not None:
+        fa_rows, fa_total = free_agent_upgrades(slots, roster, free_agents, optimal, week)
+
+    return LineupResult(
+        current_total=current_total,
+        optimal_total=optimal_total,
+        swaps_df=pd.DataFrame(swap_rows),
+        missing=missing,
+        fa_total=fa_total,
+        fa_df=pd.DataFrame(fa_rows),
+    )
+
+
+# Which free-agent pools to pull for each kind of lineup slot (ESPN's
+# free-agent search filters by a single position at a time).
+SLOT_FA_POSITIONS = {
+    "RB/WR/TE": ("RB", "WR", "TE"),
+    "FLEX": ("RB", "WR", "TE"),
+    "RB/WR": ("RB", "WR"),
+    "WR/TE": ("WR", "TE"),
+    "OP": ("QB", "RB", "WR", "TE"),
+}
+
+
+def free_agent_positions(slots: list) -> tuple:
+    out = []
+    for slot in dict.fromkeys(slots):
+        for pos in SLOT_FA_POSITIONS.get(slot, (slot,)):
+            if pos not in out:
+                out.append(pos)
+    return tuple(out)
+
+
+@st.cache_data(ttl=LEAGUE_CACHE_TTL_SECONDS, show_spinner="Loading free agents...")
+def get_free_agent_pool(_league, league_id: int, year: int, week: int, positions: tuple, per_position: int):
+    """
+    Free agents (with that week's projection) for each position the lineup can
+    use. Returns (list of plain dicts, positions that failed to load); plain
+    dicts keep the cached value small and picklable. league_id/year are only
+    cache keys.
+    """
+    pool, failed, seen = [], [], set()
+    for pos in positions:
+        try:
+            players = _league.free_agents(week=week, size=per_position, position=pos)
+        except Exception:
+            failed.append(pos)
+            continue
+        for p in players:
+            key = _player_key(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            proj = get_week_proj_points(p, week)
+            if proj is None:
+                continue
+            pool.append(
+                {
+                    "key": key,
+                    "name": p.name,
+                    "position": p.position,
+                    "eligible": list(getattr(p, "eligibleSlots", None) or []),
+                    "proj": proj,
+                    "status": normalize_status(getattr(p, "injuryStatus", None)),
+                    "percent_owned": getattr(p, "percent_owned", None),
+                }
+            )
+    return pool, failed
+
+
+def free_agent_candidates(pool: list) -> list:
+    return [
+        Candidate(
+            key=d["key"],
+            name=d["name"],
+            position=d["position"],
+            eligible=frozenset(d["eligible"]),
+            proj=d["proj"],
+            status=d["status"],
+            percent_owned=d["percent_owned"],
+            is_fa=True,
+        )
+        for d in pool
+    ]
 
 
 # ---------------------------------------------------------------------
 # Free agents
 # ---------------------------------------------------------------------
-def build_free_agents_df(league: League, week: int, position: str, size: int = 50) -> pd.DataFrame:
+def build_free_agents_df(
+    league: League, week: int, position: str, size: int = FREE_AGENT_LIST_SIZE
+) -> pd.DataFrame:
     pos_arg = None if position == "All" else position
     try:
         players = league.free_agents(week=week, size=size, position=pos_arg)
@@ -462,7 +828,7 @@ def build_free_agents_df(league: League, week: int, position: str, size: int = 5
                 "Avg Points": _safe_round(get_avg_points(player)),
                 "Season Proj": _safe_round(get_season_proj_points(player)),
                 "% Owned": _safe_round(getattr(player, "percent_owned", None)),
-                "Injury Status": getattr(player, "injuryStatus", "ACTIVE"),
+                "Injury Status": normalize_status(getattr(player, "injuryStatus", None)),
             }
         )
     df = pd.DataFrame(rows)
@@ -480,8 +846,8 @@ def build_injury_report_df(league: League, week: int, lookup: dict) -> pd.DataFr
     rows = []
     for team in league.teams:
         for player in team.roster:
-            status = getattr(player, "injuryStatus", None)
-            if status and status.upper() in NON_ACTIVE_STATUSES:
+            status = normalize_status(getattr(player, "injuryStatus", None))
+            if status in NON_ACTIVE_STATUSES:
                 rows.append(
                     {
                         "Team": team.team_name,
@@ -525,7 +891,7 @@ def build_player_compare_df(players_with_teams, week: int, lookup: dict) -> pd.D
                 ),
                 "Avg Points": _safe_round(get_avg_points(player)),
                 "Season Proj": _safe_round(get_season_proj_points(player)),
-                "Injury Status": getattr(player, "injuryStatus", "ACTIVE"),
+                "Injury Status": normalize_status(getattr(player, "injuryStatus", None)),
             }
         )
     return pd.DataFrame(rows)
@@ -619,20 +985,12 @@ def main():
     with tab1:
         standings_df = build_standings_df(league)
         st.dataframe(
-            standings_df,
-            use_container_width=True,
+            styled(standings_df, streak_col="Streak"),
+            width="stretch",
             hide_index=True,
             height=fit_height(standings_df),
         )
-
-        fig = px.bar(
-            standings_df,
-            x="Team",
-            y="Points For",
-            color="Wins",
-            title="Points For by Team",
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(build_points_chart(standings_df), width="stretch")
 
     # --- Rosters & Lineup Optimizer ---
     with tab2:
@@ -658,37 +1016,96 @@ def main():
             )
 
         roster_df = build_roster_df(team, roster_week, lookup)
-        st.dataframe(roster_df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            styled(roster_df, status_cols=("Injury Status",)),
+            width="stretch",
+            hide_index=True,
+        )
 
         st.subheader(f"Lineup Optimizer (Week {roster_week})")
         st.caption(
-            "Based on ESPN's projections for the selected week only. It "
-            "re-slots your current roster, so it's most reliable for the "
-            "current week."
+            "Based on ESPN's projections for the selected week only, and it "
+            "respects your league's lineup slots, so a player is only ever "
+            "suggested for a slot he's eligible to fill."
         )
         try:
-            current_total, optimal_total, swaps_df, missing = optimize_lineup(
-                league, team, roster_week, lookup
-            )
-            left_on_bench = round(optimal_total - current_total, 1)
+            # Free agents only make sense for the current or an upcoming week.
+            fa_candidates, fa_failed = None, []
+            if roster_week >= current_week:
+                slots = starting_slots(league)
+                fa_pool, fa_failed = get_free_agent_pool(
+                    league,
+                    int(league_id),
+                    int(year),
+                    roster_week,
+                    free_agent_positions(slots),
+                    FREE_AGENTS_PER_POSITION,
+                )
+                fa_candidates = free_agent_candidates(fa_pool)
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric(f"Current Starters (Wk {roster_week} Proj)", f"{current_total:.1f}")
-            col2.metric(f"Optimal Lineup (Wk {roster_week} Proj)", f"{optimal_total:.1f}")
+            res = optimize_lineup(league, team, roster_week, lookup, fa_candidates)
+            left_on_bench = round(res.optimal_total - res.current_total, 1)
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric(f"Current Starters (Wk {roster_week})", f"{res.current_total:.1f}")
+            col2.metric("Optimal (Your Roster)", f"{res.optimal_total:.1f}")
             col3.metric("Points Left on Bench", f"{left_on_bench:+.1f}")
+            if res.fa_total is None:
+                col4.metric("Optimal + Free Agents", "—")
+            else:
+                col4.metric(
+                    "Optimal + Free Agents",
+                    f"{res.fa_total:.1f}",
+                    delta=f"{res.fa_total - res.optimal_total:+.1f}",
+                )
 
-            if missing:
+            if res.missing:
                 st.warning(
                     "No Week "
-                    f"{roster_week} projection from ESPN for: {', '.join(missing)}. "
+                    f"{roster_week} projection from ESPN for: {', '.join(res.missing)}. "
                     "They're counted as 0.0, so double-check those spots by hand."
                 )
 
-            if swaps_df.empty or left_on_bench <= 0:
+            if res.swaps_df.empty or left_on_bench <= 0:
                 st.success("Your current lineup already matches the optimal lineup.")
             else:
                 st.write("Suggested swaps to reach the optimal lineup:")
-                st.dataframe(swaps_df, use_container_width=True, hide_index=True)
+                st.dataframe(res.swaps_df, width="stretch", hide_index=True)
+
+            st.subheader(f"Free Agent Upgrades (Week {roster_week})")
+            if fa_candidates is None:
+                st.info(
+                    "Free agent upgrades are only shown for the current or an "
+                    "upcoming week."
+                )
+            else:
+                if fa_failed:
+                    st.warning(
+                        "Couldn't load free agents for: "
+                        f"{', '.join(fa_failed)}. Results may be incomplete."
+                    )
+                if res.fa_df.empty:
+                    st.success(
+                        "No available free agent projects to outscore a player "
+                        "in your optimal lineup this week."
+                    )
+                else:
+                    st.dataframe(
+                        styled(res.fa_df, status_cols=("Injury Status",)),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                st.caption(
+                    "Measured against your optimal lineup (after the swaps above), "
+                    "using each position's top "
+                    f"{FREE_AGENTS_PER_POSITION} most-owned free agents. Players "
+                    "who are Out, on Injured Reserve or suspended are skipped. "
+                    "Positions are respected: if the player replaced plays a "
+                    "different position, the move works through a FLEX-type slot "
+                    "(e.g. a RB takes a RB slot and another RB moves to FLEX). "
+                    "You'll need to drop someone to make room; this doesn't judge "
+                    "long-term value."
+                )
         except Exception as e:
             st.warning(f"Couldn't compute an optimal lineup for this roster. ({e})")
 
@@ -697,8 +1114,11 @@ def main():
         week = dropdown(
             "Week", week_options, index=default_week_index, key="matchup_week"
         )
-        matchup_df = build_matchup_df(league, int(week))
-        st.dataframe(matchup_df, use_container_width=True, hide_index=True)
+        st.html(matchups_html(build_matchup_rows(league, int(week))))
+        st.caption(
+            "Each score shows ESPN's projected score in gray parentheses, "
+            "then the actual score."
+        )
 
     # --- Power Rankings ---
     with tab4:
@@ -714,7 +1134,7 @@ def main():
         else:
             st.dataframe(
                 pr_df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=fit_height(pr_df),
             )
@@ -744,7 +1164,15 @@ def main():
         if fa_df.empty:
             st.info("No free agent data available for this selection.")
         else:
-            st.dataframe(fa_df, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Showing up to {FREE_AGENT_LIST_SIZE} free agents (the most-owned "
+                f"first), sorted by their Week {int(fa_week)} projection."
+            )
+            st.dataframe(
+                styled(fa_df, status_cols=("Injury Status",)),
+                width="stretch",
+                hide_index=True,
+            )
 
     # --- Injury Report ---
     with tab6:
@@ -760,7 +1188,11 @@ def main():
         if injury_df.empty:
             st.success("No notable injuries reported across the league right now.")
         else:
-            st.dataframe(injury_df, use_container_width=True, hide_index=True)
+            st.dataframe(
+                styled(injury_df, status_cols=("Status",)),
+                width="stretch",
+                hide_index=True,
+            )
 
     # --- Trade Analyzer ---
     with tab7:
@@ -791,7 +1223,11 @@ def main():
             compare_df = build_player_compare_df(
                 selected_pairs, trade_week, trade_lookup
             )
-            st.dataframe(compare_df, use_container_width=True, hide_index=True)
+            st.dataframe(
+                styled(compare_df, status_cols=("Injury Status",)),
+                width="stretch",
+                hide_index=True,
+            )
 
             fig = px.bar(
                 compare_df,
@@ -800,7 +1236,7 @@ def main():
                 color="Position",
                 title=f"Week {trade_week} Projected Points",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     # --- Weekly Recap ---
     with tab8:
@@ -823,7 +1259,7 @@ def main():
             with col1:
                 st.write("**Biggest overperformers**")
                 st.dataframe(
-                    recap_df.head(10), use_container_width=True, hide_index=True
+                    recap_df.head(10), width="stretch", hide_index=True
                 )
             with col2:
                 st.write("**Biggest underperformers**")
@@ -831,7 +1267,7 @@ def main():
                     recap_df.tail(10).sort_values(
                         by="Diff (Actual − Proj)", ascending=True
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
