@@ -10,6 +10,7 @@ Run:   streamlit run app.py
 """
 
 import html
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -105,6 +106,7 @@ def load_credentials():
         get_league.clear()
         get_week_projection_lookup.clear()
         get_free_agent_pool.clear()
+        get_week_boxes.clear()
         st.rerun()
     st.sidebar.caption(
         "Data auto-refreshes every 30 min. Use the button above right "
@@ -375,13 +377,19 @@ def injury_summary(df: pd.DataFrame) -> list:
     ]
 
 
+def win_scale_bounds(df: pd.DataFrame) -> tuple:
+    """Color scale for wins: 0 up to the games played so far, i.e. the fewest and
+    most wins that were possible, not just the fewest and most anyone has."""
+    ties = df["Ties"] if "Ties" in df else 0
+    games = int((df["Wins"] + df["Losses"] + ties).max()) if len(df) else 0
+    return 0, max(games, 1)
+
+
 def build_points_chart(standings_df: pd.DataFrame):
     """Horizontal bars: most points at the top, colored by wins
     (green = most wins, red = fewest)."""
     df = standings_df.sort_values("Points For", ascending=False, kind="stable")
-    lo, hi = int(df["Wins"].min()), int(df["Wins"].max())
-    if lo == hi:  # everyone tied (e.g. before the first game): avoid a flat scale
-        lo, hi = lo - 1, hi + 1
+    lo, hi = win_scale_bounds(standings_df)
 
     fig = px.bar(
         df,
@@ -403,7 +411,7 @@ def build_points_chart(standings_df: pd.DataFrame):
     fig.update_layout(
         height=max(320, 42 * len(df) + 110),
         margin=dict(l=0, r=10, t=50, b=10),
-        coloraxis_colorbar=dict(title="Wins", tickmode="linear", tick0=lo, dtick=1),
+        coloraxis_colorbar=dict(title="Wins", tickmode="linear", tick0=0, dtick=1),
     )
     return style_fig(fig)
 
@@ -441,20 +449,110 @@ def build_roster_df(team, week: int, lookup: dict) -> pd.DataFrame:
 GRAY = "#9aa0a6"
 
 
-def build_matchup_rows(league: League, week: int) -> list:
-    """One dict per game: each side has team, score and ESPN's projected score."""
+@st.cache_resource(show_spinner=False, ttl=5 * 60)
+def get_week_boxes(_league, league_id: int, year: int, week: int) -> list:
+    """The week's box scores, shared by the Matchups, Rosters and Recap tabs so
+    ESPN is asked once per few minutes instead of once per tab."""
+    return list(_league.box_scores(week=week))
+
+
+TEAM_SCORE_SD = 20.0  # typical gap between a team's actual and projected score
+
+
+def _lineup_outlook(lineup) -> tuple:
+    """(expected final score, full projected total, projected points still to come)
+    for a team's starters. Finished games count their real points; games not yet
+    started count the projection; games in progress count whichever is larger."""
+    expected = total = remaining = 0.0
+    for p in lineup or []:
+        if getattr(p, "slot_position", None) in ("BE", "IR"):
+            continue
+        proj = getattr(p, "projected_points", None)
+        pts = getattr(p, "points", None)
+        proj = float(proj) if isinstance(proj, (int, float)) else 0.0
+        pts = float(pts) if isinstance(pts, (int, float)) else 0.0
+        played = getattr(p, "game_played", None)
+        finished = (played == 100) if played is not None else pts > 0
+        total += proj
+        if finished:
+            expected += pts
+        elif pts > 0:
+            expected += max(pts, proj)
+            remaining += max(proj - pts, 0.0)
+        else:
+            expected += proj
+            remaining += proj
+    return expected, total, remaining
+
+
+def win_probability(home_lineup, away_lineup, sd: float = TEAM_SCORE_SD):
+    """Chance each side wins, from ESPN's projections and the points already
+    scored: a normal model on the expected score gap, whose uncertainty shrinks as
+    games finish. This is our own estimate, not ESPN's displayed win probability.
+    Returns {"home": p, "final": bool} or None without projections."""
+    eh, ph, rh = _lineup_outlook(home_lineup)
+    ea, pa, ra = _lineup_outlook(away_lineup)
+    if ph + pa <= 0:
+        return None
+    frac = (rh + ra) / (ph + pa)
+    diff = eh - ea
+    if frac < 0.005:  # every starter's game is over
+        return {"home": 1.0 if diff > 0 else 0.0 if diff < 0 else 0.5, "final": True}
+    sigma = sd * math.sqrt(2 * min(frac, 1.0))
+    return {"home": 0.5 * (1 + math.erf(diff / (sigma * math.sqrt(2)))), "final": False}
+
+
+def build_matchup_rows(league: League, week: int, boxes=None) -> list:
+    """One dict per game: each side has team, score and ESPN's projected score,
+    plus our win probability estimate for the game."""
     def side(team, score, projected):
         if team is None:
             return {"team": "BYE", "score": None, "proj": None}
         return {"team": team.team_name, "score": score, "proj": projected}
 
-    return [
-        {
+    rows = []
+    for box in (boxes if boxes is not None else league.box_scores(week=week)):
+        win = None
+        if box.home_team is not None and box.away_team is not None:
+            win = win_probability(getattr(box, "home_lineup", None), getattr(box, "away_lineup", None))
+        rows.append({
             "away": side(box.away_team, box.away_score, box.away_projected),
             "home": side(box.home_team, box.home_score, box.home_projected),
-        }
-        for box in league.box_scores(week=week)
-    ]
+            "win": win,
+        })
+    return rows
+
+
+def team_week_summary(boxes: list, team) -> dict | None:
+    """Score, projection and opponent for `team` in one week's box scores."""
+    for box in boxes:
+        for me, opp, my_s, opp_s, my_p in (
+            (box.home_team, box.away_team, box.home_score, box.away_score, box.home_projected),
+            (box.away_team, box.home_team, box.away_score, box.home_score, box.away_projected),
+        ):
+            if me is not None and getattr(me, "team_id", None) == team.team_id:
+                return {
+                    "score": float(my_s or 0), "proj": my_p,
+                    "opp": opp.team_name if opp is not None else None,
+                    "opp_score": float(opp_s or 0) if opp is not None else None,
+                    "played": bool(my_s or opp_s),
+                }
+    return None
+
+
+def week_summary_cards(summary: dict | None, week: int) -> list:
+    if not summary:
+        return [(f"Week {week} Points", "—", "bye week or no game found")]
+    pts = f'{summary["score"]:.1f}' if summary["played"] else "—"
+    proj = f'{float(summary["proj"]):.1f} projected' if isinstance(summary["proj"], (int, float)) else None
+    cards = [(f"Week {week} Points Scored", pts, proj)]
+    if summary["opp"] is not None:
+        cards.append(("Opponent", summary["opp"],
+                      f'scored {summary["opp_score"]:.1f}' if summary["played"] else "not played yet"))
+        if summary["played"]:
+            margin = summary["score"] - summary["opp_score"]
+            cards.append(("Margin", f"{margin:+.1f}", "leading" if margin > 0 else "trailing" if margin < 0 else "tied"))
+    return cards
 
 
 def matchup_summary(rows: list) -> list:
@@ -515,15 +613,19 @@ def matchups_html(rows: list, bar: bool = False) -> str:
             elif h["score"] > a["score"]:
                 lead = "home"
         split = ""
-        if bar and isinstance(a["proj"], (int, float)) and isinstance(h["proj"], (int, float)) \
-                and (a["proj"] + h["proj"]) > 0:
-            pa = a["proj"] / (a["proj"] + h["proj"]) * 100
+        win = r.get("win")
+        if bar and win:
+            ph = win["home"] * 100
+            pa = 100 - ph
+            away_leads = pa >= ph
+            mid = "Final" if win["final"] else "Win probability"
             split = (
                 '<div class="sb-split"><div class="bar-track" style="display:flex;">'
-                f'<div style="width:{pa:.1f}%;background:{ACCENT};"></div>'
-                f'<div style="width:{100 - pa:.1f}%;background:{GRAY};opacity:0.55;"></div></div>'
-                f'<div class="sb-split-cap"><span>{pa:.0f}% projected share</span>'
-                f"<span>{100 - pa:.0f}%</span></div></div>"
+                f'<div style="width:{pa:.1f}%;background:{ACCENT if away_leads else GRAY};'
+                f'{"" if away_leads else "opacity:0.55;"}"></div>'
+                f'<div style="width:{ph:.1f}%;background:{GRAY if away_leads else ACCENT};'
+                f'{"opacity:0.55;" if away_leads else ""}"></div></div>'
+                f'<div class="sb-split-cap"><b>{pa:.0f}%</b><span>{mid}</span><b>{ph:.0f}%</b></div></div>'
             )
         cards.append(
             '<div class="sb-card">'
@@ -1172,7 +1274,8 @@ h2, h3 { letter-spacing: -0.01em; }
 .sb-row:not(.lead) .sb-score { font-weight: 600; opacity: 0.9; }
 .sb-split { margin: 0.35rem 0.9rem 0.25rem; }
 .sb-split .bar-track { height: 6px; }
-.sb-split-cap { font-size: 0.7rem; opacity: 0.6; display: flex; justify-content: space-between; margin-top: 0.2rem; }
+.sb-split-cap { font-size: 0.75rem; display: flex; justify-content: space-between; margin-top: 0.25rem; }
+.sb-split-cap span { opacity: 0.6; }
 
 .podium { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0.9rem; align-items: end; margin-bottom: 1rem; }
 .pod { border-radius: 16px; padding: 1rem 1.2rem; border: 1px solid rgba(128,128,128,0.28);
@@ -1470,7 +1573,7 @@ def build_score_trend_chart(league):
         color_discrete_sequence=PALETTE, title="Weekly Scores",
     )
     fig.update_xaxes(dtick=1)
-    fig.update_layout(height=420, margin=dict(l=0, r=10, t=60, b=10), legend_title_text="")
+    fig.update_layout(height=560, margin=dict(l=0, r=10, t=70, b=20), legend_title_text="")
     return style_fig(fig)
 
 
@@ -1479,7 +1582,7 @@ def build_pf_pa_chart(df: pd.DataFrame):
     fig = px.scatter(
         df, x="Points Against", y="Points For", text="Team", color="Wins",
         color_continuous_scale=WIN_COLORSCALE,
-        range_color=(int(df["Wins"].min()), max(int(df["Wins"].max()), int(df["Wins"].min()) + 1)),
+        range_color=win_scale_bounds(df),
         hover_data={"Wins": True, "Losses": True}, title="Points For vs. Points Against",
     )
     fig.update_traces(textposition="top center", marker=dict(size=14, line=dict(width=1, color="rgba(255,255,255,0.6)")))
@@ -1487,7 +1590,8 @@ def build_pf_pa_chart(df: pd.DataFrame):
     fig.add_vline(x=float(df["Points Against"].mean()), line_dash="dash", opacity=0.4)
     pad_x = (df["Points Against"].max() - df["Points Against"].min()) * 0.12 + 1
     fig.update_xaxes(range=[df["Points Against"].min() - pad_x, df["Points Against"].max() + pad_x])
-    fig.update_layout(height=420, margin=dict(l=0, r=10, t=60, b=10), coloraxis_showscale=False)
+    fig.update_layout(height=620, margin=dict(l=0, r=20, t=70, b=30), coloraxis_showscale=False)
+    fig.update_traces(marker=dict(size=18, line=dict(width=1, color="rgba(255,255,255,0.6)")))
     return style_fig(fig)
 
 
@@ -1880,15 +1984,14 @@ def main():
         ))
         st.write("")
         st.plotly_chart(build_points_chart(standings_df), width="stretch")
-        trend_col, scatter_col = st.columns(2)
-        with trend_col:
-            trend_fig = build_score_trend_chart(league)
-            if trend_fig is not None:
-                st.plotly_chart(trend_fig, width="stretch")
-            else:
-                st.info("Weekly scores will chart here once games are played.")
-        with scatter_col:
-            st.plotly_chart(build_pf_pa_chart(standings_df), width="stretch")
+        st.write("")
+        trend_fig = build_score_trend_chart(league)
+        if trend_fig is not None:
+            st.plotly_chart(trend_fig, width="stretch")
+        else:
+            st.info("Weekly scores will chart here once games are played.")
+        st.write("")
+        st.plotly_chart(build_pf_pa_chart(standings_df), width="stretch")
         st.caption(
             "Points For vs. Points Against: top-left teams score a lot and allow little. "
             "Dashed lines mark the league averages."
@@ -1918,6 +2021,11 @@ def main():
             )
 
         roster_df = build_roster_df(team, roster_week, lookup)
+        try:
+            week_boxes = get_week_boxes(league, int(league_id), int(year), roster_week)
+            stat_cards(week_summary_cards(team_week_summary(week_boxes, team), roster_week))
+        except Exception:
+            pass  # the cards are a nicety; never block the roster
         st.html(lineup_cards_html(roster_df, roster_week))
         with st.expander("Full roster table (season projection and averages)"):
             show_table(roster_df, pills={"Injury Status": status_pill})
@@ -2010,14 +2118,18 @@ def main():
         week = dropdown(
             "Week", week_options, index=default_week_index, key="matchup_week"
         )
-        matchup_rows = build_matchup_rows(league, int(week))
+        matchup_rows = build_matchup_rows(
+            league, int(week),
+            boxes=get_week_boxes(league, int(league_id), int(year), int(week)),
+        )
         stat_cards(matchup_summary(matchup_rows))
         st.write("")
         st.html(matchups_html(matchup_rows, bar=True))
         st.caption(
             "Each score shows ESPN's projected score in gray parentheses, "
             "then the actual score. The leading side is highlighted, and the bar "
-            "under each game shows each side's share of the combined projection."
+            "under each game is our win probability estimate, built from ESPN's "
+            "projections and the points already scored (not ESPN's own figure)."
         )
 
     # --- Power Rankings ---
@@ -2251,7 +2363,7 @@ def main():
             index=max(default_week_index - 1, 0),  # default to last completed week
             key="recap_week",
         )
-        recap_boxes = league.box_scores(week=int(recap_week))
+        recap_boxes = get_week_boxes(league, int(league_id), int(year), int(recap_week))
         recap = build_league_recap(
             league, int(recap_week), boxes=recap_boxes,
             history_loader=lambda: get_league_history_scores(
