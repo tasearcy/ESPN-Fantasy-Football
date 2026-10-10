@@ -255,6 +255,15 @@ def get_week_proj_points(player, week: int, lookup: dict | None = None):
     return None
 
 
+def get_week_actual_points(player, week: int):
+    """Points actually scored in `week`, or None if ESPN has no score yet
+    (the game hasn't been played, so show a dash rather than a fake 0.0)."""
+    stats = getattr(player, "stats", None) or {}
+    week_stats = stats.get(week) or stats.get(str(week)) or {}
+    val = week_stats.get("points")
+    return val if isinstance(val, (int, float)) else None
+
+
 def get_avg_points(player):
     return getattr(player, "avg_points", None) or getattr(player, "total_points", None)
 
@@ -413,7 +422,8 @@ def build_roster_df(team, week: int, lookup: dict) -> pd.DataFrame:
                 "Position": player.position,
                 "Pro Team": player.proTeam,
                 week_col: _safe_round(get_week_proj_points(player, week, lookup)),
-                "Avg Points": _safe_round(get_avg_points(player)),
+                f"Week {week} Actual": _safe_round(get_week_actual_points(player, week)),
+                "PPG": _safe_round(get_avg_points(player)),
                 "Season Proj": _safe_round(get_season_proj_points(player)),
                 "Injury Status": normalize_status(getattr(player, "injuryStatus", None)),
             }
@@ -941,7 +951,7 @@ def build_free_agents_df(
                 "Position": player.position,
                 "Pro Team": player.proTeam,
                 week_col: _safe_round(get_week_proj_points(player, week)),
-                "Avg Points": _safe_round(get_avg_points(player)),
+                "PPG": _safe_round(get_avg_points(player)),
                 "Season Proj": _safe_round(get_season_proj_points(player)),
                 "% Owned": _safe_round(getattr(player, "percent_owned", None)),
                 "Injury Status": normalize_status(getattr(player, "injuryStatus", None)),
@@ -1048,7 +1058,7 @@ def build_player_compare_df(players_with_teams, week: int, lookup: dict) -> pd.D
                 f"Week {week} Proj": _safe_round(
                     get_week_proj_points(player, week, lookup)
                 ),
-                "Avg Points": _safe_round(get_avg_points(player)),
+                "PPG": _safe_round(get_avg_points(player)),
                 "Season Proj": _safe_round(get_season_proj_points(player)),
                 "Injury Status": normalize_status(getattr(player, "injuryStatus", None)),
             }
@@ -1279,7 +1289,7 @@ def hero(league_name: str, year, week) -> str:
     return (
         '<div class="hero">'
         f'<div class="hero-title">🏈 {html.escape(str(league_name))}</div>'
-        f'<div class="hero-sub">{html.escape(str(year))} season · Week {html.escape(str(week))}</div>'
+        f'<div class="hero-sub">{html.escape(str(year))} Season · Week {html.escape(str(week))}</div>'
         "</div>"
     )
 
@@ -1483,6 +1493,7 @@ def build_pf_pa_chart(df: pd.DataFrame):
 
 def lineup_cards_html(df: pd.DataFrame, week: int) -> str:
     proj_col = f"Week {week} Proj"
+    actual_col = f"Week {week} Actual"
     starters = df[~df["Slot"].isin(["Bench", "IR"])]
     bench = df[df["Slot"] == "Bench"]
     ir = df[df["Slot"] == "IR"]
@@ -1499,8 +1510,8 @@ def lineup_cards_html(df: pd.DataFrame, week: int) -> str:
             f'<div class="lc{" muted" if muted else ""}"><div class="lc-top">'
             f'<span class="lc-slot">{_e(r["Slot"]).upper()}</span>{badge}</div>'
             f'<div class="lc-name">{_e(r["Player"])}</div><div class="lc-sub">{sub}</div>'
-            f'<div class="lc-bot"><span class="lc-proj">{_n(r[proj_col])}</span>'
-            f'<span class="lc-avg">avg {_n(r["Avg Points"])}</span></div></div>'
+            f'<div class="lc-bot"><span class="lc-proj">{_n(r[actual_col])}</span>'
+            f'<span class="lc-avg">proj {_n(r[proj_col])}</span></div></div>'
         )
 
     total = pd.to_numeric(starters[proj_col], errors="coerce").sum()
@@ -1597,12 +1608,12 @@ def trade_side_html(team_name, df_side, wk_col, favored: bool) -> str:
         for _, r in df_side.iterrows()
     )
     total = pd.to_numeric(df_side[wk_col], errors="coerce").sum()
-    avg = pd.to_numeric(df_side["Avg Points"], errors="coerce").sum()
+    avg = pd.to_numeric(df_side["PPG"], errors="coerce").sum()
     season = pd.to_numeric(df_side["Season Proj"], errors="coerce").sum()
     return (
         f'<div class="tside{" win" if favored else ""}"><div class="tside-h">Gives up</div>'
         f'<div class="tside-team">{_e(team_name)}</div>{rows}'
-        f'<div class="tside-total"><span class="mv-meta">Avg {avg:.1f}/wk · Season proj {season:.0f}</span>'
+        f'<div class="tside-total"><span class="mv-meta">PPG {avg:.1f} · Season proj {season:.0f}</span>'
         f'<span class="big">{total:.1f}</span></div></div>'
     )
 
@@ -2219,8 +2230,8 @@ def main():
                         sub = compare_df[compare_df["Side"] == side]
                         tot_rows.append({"Team": name, "Metric": f"Week {trade_week} proj",
                                          "Points": float(pd.to_numeric(sub[wk_col], errors="coerce").sum())})
-                        tot_rows.append({"Team": name, "Metric": "Avg points / week",
-                                         "Points": float(pd.to_numeric(sub["Avg Points"], errors="coerce").sum())})
+                        tot_rows.append({"Team": name, "Metric": "PPG",
+                                         "Points": float(pd.to_numeric(sub["PPG"], errors="coerce").sum())})
                     fig2 = px.bar(
                         pd.DataFrame(tot_rows), x="Metric", y="Points", color="Team", barmode="group",
                         title="Totals each side gives up", color_discrete_sequence=PALETTE,
@@ -2292,16 +2303,13 @@ def main():
             if recap_df.empty:
                 st.info("No player-level projections are available for this week.")
             else:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("**Biggest overperformers**")
-                    show_table(diff_table_df(recap_df.head(10)), raw_cols=("Diff (Actual − Proj)",))
-                with col2:
-                    st.write("**Biggest underperformers**")
-                    show_table(
-                        diff_table_df(recap_df.tail(10).sort_values(by="Diff (Actual − Proj)", ascending=True)),
-                        raw_cols=("Diff (Actual − Proj)",),
-                    )
+                st.write("**Biggest overperformers**")
+                show_table(diff_table_df(recap_df.head(10)), raw_cols=("Diff (Actual − Proj)",))
+                st.write("**Biggest underperformers**")
+                show_table(
+                    diff_table_df(recap_df.tail(10).sort_values(by="Diff (Actual − Proj)", ascending=True)),
+                    raw_cols=("Diff (Actual − Proj)",),
+                )
 
 
 if __name__ == "__main__":
