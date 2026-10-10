@@ -297,8 +297,18 @@ def build_standings_df(league: League) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-# Red (fewest wins) -> green (most wins), with strong mid-tones so
-# neighbouring win totals are easy to tell apart.
+# Points For bars: soft red (fewest wins) -> cream at the halfway mark -> soft green
+# (most wins). Gentler on the eyes; the cream midpoint separates winning from losing.
+WIN_BAR_COLORSCALE = [
+    [0.00, "#d64545"],
+    [0.25, "#f19a82"],
+    [0.50, "#ece6d6"],
+    [0.75, "#9fd49a"],
+    [1.00, "#2a9d5c"],
+]
+
+# Points For vs. Points Against scatter keeps the high-contrast scale: dots need to
+# stand out more than bars do.
 WIN_COLORSCALE = [
     [0.00, "#d62728"],
     [0.25, "#ff8c1a"],
@@ -397,7 +407,7 @@ def build_points_chart(standings_df: pd.DataFrame):
         y="Team",
         orientation="h",
         color="Wins",
-        color_continuous_scale=WIN_COLORSCALE,
+        color_continuous_scale=WIN_BAR_COLORSCALE,
         range_color=(lo, hi),
         category_orders={"Team": list(df["Team"])},
         hover_data={"Wins": True, "Losses": True, "Points For": ":.1f"},
@@ -1789,6 +1799,31 @@ class LeagueRecap:
     records: list | None = None
 
 
+def playoff_start_week(year) -> int:
+    """First playoff week: week 14 through the 2020 season, week 15 from 2021 on."""
+    return 14 if int(year) <= 2020 else 15
+
+
+def record_eligible(team, year, week, playoff_teams) -> bool:
+    """Should this team's score count toward scoring records in `week`?
+
+    Playoff weeks (three rounds) only count for teams still alive in the bracket:
+    teams that missed the playoffs are out for all three weeks, quarterfinal losers
+    are out for the last two, and semifinal losers still count in the final week
+    because the third-place game matters. Regular-season weeks always count."""
+    start = playoff_start_week(year)
+    if not (start <= week <= start + 2):
+        return True
+    seed = getattr(team, "standing", 0) or 0
+    if isinstance(playoff_teams, int) and playoff_teams > 0 and seed > playoff_teams:
+        return False  # missed the playoffs
+    if week > start and isinstance(playoff_teams, int) and playoff_teams > 4:
+        outcomes = getattr(team, "outcomes", None) or []
+        if len(outcomes) >= start and outcomes[start - 1] == "L":
+            return False  # lost in the quarterfinals
+    return True
+
+
 def _real_team(team) -> bool:
     return team is not None and hasattr(team, "team_name")
 
@@ -1888,9 +1923,26 @@ def build_league_recap(league: League, week: int, boxes=None, history_loader=Non
                                "gap": float(lp - wp)})
     rec.upsets.sort(key=lambda u: -u["gap"])
 
-    # Scoring records: this season so far, then all-time (needs past seasons)
-    prior = [float(sc) for t in league.teams for sc in t.scores[: week - 1] if sc and sc > 0]
-    for kind, (name, sc, _) in (("high", top), ("low", bottom)):
+    # Scoring records: this season so far, then all-time (needs past seasons).
+    # Only teams still in contention count (see record_eligible).
+    n_playoff = getattr(league.settings, "playoff_team_count", None)
+    year = getattr(league, "year", None)
+
+    def counts(team, wk):
+        return year is None or record_eligible(team, year, wk, n_playoff)
+
+    prior = [
+        float(sc)
+        for t in league.teams
+        for wk, sc in enumerate(t.scores[: week - 1], start=1)
+        if sc and sc > 0 and counts(t, wk)
+    ]
+    eligible = [x for x in scores if counts(x[2], week)]
+    if not eligible:
+        return rec
+    rec_top = max(eligible, key=lambda x: x[1])
+    rec_bottom = min(eligible, key=lambda x: x[1])
+    for kind, (name, sc, _) in (("high", rec_top), ("low", rec_bottom)):
         better = (lambda x, y: x > y) if kind == "high" else (lambda x, y: x < y)
         pick = max if kind == "high" else min
         season_rec = (not prior) or better(sc, pick(prior))
@@ -1917,16 +1969,18 @@ def md_escape(text) -> str:
 @st.cache_data(show_spinner="Loading past seasons for league records...", ttl=24 * 60 * 60)
 def get_league_history_scores(league_id: int, year: int, espn_s2: str, swid: str) -> list:
     """Every recorded team score from earlier seasons (newest first, stops at the
-    first season ESPN can't return). Used only for all-time record callouts."""
+    first season ESPN can't return). Used only for all-time record callouts; scores from teams already
+    eliminated during the playoffs are left out (see record_eligible)."""
     rows = []
     for y in range(year - 1, year - 1 - HISTORY_MAX_SEASONS, -1):
         try:
             past = League(league_id=league_id, year=y, espn_s2=espn_s2, swid=swid)
         except Exception:
             break
+        n_playoff = getattr(past.settings, "playoff_team_count", None)
         for t in past.teams:
             for wk, sc in enumerate(t.scores, start=1):
-                if sc and sc > 0:
+                if sc and sc > 0 and record_eligible(t, y, wk, n_playoff):
                     rows.append({"year": y, "week": wk, "team": t.team_name, "score": float(sc)})
     return rows
 
