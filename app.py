@@ -1267,6 +1267,18 @@ h2, h3 { letter-spacing: -0.01em; }
 .ft .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ft .mark td { padding: 0.15rem 0.85rem; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
   text-transform: uppercase; color: #38bdf8; border-top: 2px dashed rgba(56,189,248,0.7); background: rgba(56,189,248,0.07); }
+.ft-nowrap td:first-child { white-space: nowrap; }
+.ft-nowrap td, .ft-nowrap th { padding-left: 0.45rem; padding-right: 0.45rem; }
+.ft-nowrap .bar-cell { min-width: 74px; gap: 0.35rem; }
+.ft-nowrap .bar-cell .v { min-width: 2.6rem; }
+.sc { border-collapse: separate; border-spacing: 2px; font-size: 0.82rem; width: 100%; }
+.sc th { font-weight: 700; font-size: 0.72rem; color: inherit; text-align: center; padding: 0.3rem 0.2rem; }
+.sc .sc-h { vertical-align: bottom; min-width: 52px; max-width: 76px; }
+.sc .sc-h span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc .sc-r, .sc .sc-corner { text-align: left; white-space: nowrap; padding-right: 0.7rem; position: sticky; left: 0; background: #0b1220; z-index: 1; }
+.sc .sc-corner { font-size: 0.68rem; opacity: 0.7; font-weight: 600; }
+.sc .sc-cell { text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; padding: 0.42rem 0.1rem; border-radius: 6px; }
+.sc .sc-diag { outline: 2px solid #e6ebf5; outline-offset: -2px; }
 .bar-cell { display: flex; align-items: center; gap: 0.5rem; min-width: 105px; }
 .bar-cell .v { min-width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
 .bar-track { flex: 1; height: 8px; border-radius: 999px; background: rgba(128,128,128,0.22); overflow: hidden; }
@@ -1986,6 +1998,423 @@ def get_league_history_scores(league_id: int, year: int, espn_s2: str, swid: str
 
 
 # ---------------------------------------------------------------------
+# Playoff machine, playoff odds and schedule comparison
+# ---------------------------------------------------------------------
+PM_SIMS = 10_000          # Monte Carlo runs behind the playoff odds
+PM_MIN_SD, PM_MAX_SD = 12.0, 30.0
+
+
+def regular_season_weeks(year) -> int:
+    """Regular-season length: the week before the playoffs start."""
+    return playoff_start_week(year) - 1
+
+
+def playoff_byes(n_playoff) -> int:
+    """First-round byes in a standard single-elimination bracket
+    (6 teams -> 2 byes, 7 -> 1, 4 or 8 -> none)."""
+    if not isinstance(n_playoff, int) or n_playoff < 2:
+        return 0
+    return (1 << math.ceil(math.log2(n_playoff))) - n_playoff
+
+
+def _opp_id(opp):
+    return opp.team_id if hasattr(opp, "team_id") else int(opp)
+
+
+def _decided(team, w) -> bool:
+    """Has this team's game in week index `w` been played and finalised?"""
+    outs = list(getattr(team, "outcomes", None) or [])
+    if w < len(outs):
+        return outs[w] != "U"
+    scores = list(getattr(team, "scores", None) or [])
+    return w < len(scores) and bool(scores[w])
+
+
+def build_season_model(league, reg_weeks: int) -> dict:
+    """Everything the playoff tools need from ESPN's data, in plain lists:
+    teams (in league order), the not-yet-final regular-season games as
+    (week, team_index_a, team_index_b), and each team's played scores."""
+    teams = list(league.teams)
+    idx = {t.team_id: k for k, t in enumerate(teams)}
+    remaining = set()
+    played_scores = []
+    for k, t in enumerate(teams):
+        mine = []
+        for w, opp in enumerate(list(t.schedule)[:reg_weeks]):
+            oid = _opp_id(opp)
+            if oid == t.team_id or oid not in idx:
+                continue  # bye week
+            if _decided(t, w):
+                sc = t.scores[w] if w < len(t.scores) else 0
+                if sc and sc > 0:
+                    mine.append(float(sc))
+            else:
+                a, b = sorted((k, idx[oid]))
+                remaining.add((w + 1, a, b))
+        played_scores.append(mine)
+    return {"teams": teams, "idx": idx, "remaining": sorted(remaining), "played": played_scores}
+
+
+def team_strength(played_scores: list) -> tuple:
+    """(mean score per team, score spread). The mean blends the season average
+    with the last three games so a hot or cold stretch counts for more; the spread
+    is the league-wide game-to-game variation, kept inside a sane range."""
+    league_vals = [s for sc in played_scores for s in sc]
+    fallback = float(np.mean(league_vals)) if league_vals else 100.0
+    means, resid = [], []
+    for sc in played_scores:
+        if not sc:
+            means.append(fallback)
+            continue
+        season = float(np.mean(sc))
+        recent = float(np.mean(sc[-3:]))
+        means.append(0.5 * season + 0.5 * recent)
+        resid.extend(s - season for s in sc)
+    sd = float(np.std(resid, ddof=1)) if len(resid) > 3 else TEAM_SCORE_SD
+    return np.array(means), float(min(PM_MAX_SD, max(PM_MIN_SD, sd)))
+
+
+def simulate_playoff_odds(base_wins, base_pf, mean, sd, games, picks, n_playoff,
+                          n_sims: int = PM_SIMS, seed: int = 2026) -> dict:
+    """Play out every remaining regular-season game `n_sims` times.
+
+    base_wins : wins so far (ties = 0.5), one per team
+    base_pf   : points for so far
+    games     : [(team_a, team_b), ...] remaining matchups, as team indexes
+    picks     : {game_number: winning team index}; unpicked games are simulated
+    A picked game keeps the simulated score pair but hands the higher score to
+    the chosen winner, so points-for tiebreakers stay realistic. The random
+    numbers are fixed, so changing one pick moves the odds smoothly instead of
+    adding sampling noise. Seeds sort by wins, then points for."""
+    base_wins = np.asarray(base_wins, float)
+    base_pf = np.asarray(base_pf, float)
+    n = len(base_wins)
+    G = len(games)
+    rng = np.random.default_rng(seed)
+    wins = np.tile(base_wins, (n_sims, 1))
+    pf = np.tile(base_pf, (n_sims, 1))
+    if G:
+        ga = np.array([g[0] for g in games])
+        gb = np.array([g[1] for g in games])
+        sa = rng.normal(mean[ga], sd, (n_sims, G))
+        sb = rng.normal(mean[gb], sd, (n_sims, G))
+        for g, winner in (picks or {}).items():
+            flip = (sa[:, g] < sb[:, g]) if winner == ga[g] else (sb[:, g] < sa[:, g])
+            sa[flip, g], sb[flip, g] = sb[flip, g].copy(), sa[flip, g].copy()
+        a_wins = (sa > sb).astype(float)
+        ea = np.zeros((G, n)); eb = np.zeros((G, n))
+        ea[np.arange(G), ga] = 1.0
+        eb[np.arange(G), gb] = 1.0
+        wins += a_wins @ ea + (1.0 - a_wins) @ eb
+        pf += sa @ ea + sb @ eb
+    key = wins * 1e5 + pf
+    order = np.argsort(-key, axis=1)
+    seeds = np.empty_like(order)
+    np.put_along_axis(seeds, order, np.broadcast_to(np.arange(n), order.shape), axis=1)
+    n_po = n_playoff if isinstance(n_playoff, int) and 0 < n_playoff <= n else max(1, n // 2)
+    byes = playoff_byes(n_po)
+    seed_probs = np.stack([(seeds == s).mean(0) for s in range(n)], axis=1)  # team x seed
+    return {
+        "playoff": (seeds < n_po).mean(0),
+        "bye": (seeds < byes).mean(0) if byes else np.zeros(n),
+        "top_seed": (seeds == 0).mean(0),
+        "avg_seed": (seeds + 1).mean(0),
+        "proj_wins": wins.mean(0),
+        "seed_probs": seed_probs,
+        "n_playoff": n_po,
+        "byes": byes,
+    }
+
+
+def schedule_comparison(league, reg_weeks: int) -> dict:
+    """How each team would have done against every team's schedule, using only
+    the weeks all teams have finished. If a schedule's opponent that week is the
+    team itself, the team faces the schedule's owner instead."""
+    teams = list(league.teams)
+    idx = {t.team_id: k for k, t in enumerate(teams)}
+    n = len(teams)
+    weeks = [w for w in range(reg_weeks)
+             if all(w < len(t.schedule) and _decided(t, w) and w < len(t.scores) for t in teams)]
+    wins = np.zeros((n, n))   # wins[i, j]: team i's record against team j's schedule
+    for i in range(n):
+        for j in range(n):
+            tot = 0.0
+            for w in weeks:
+                opp = idx.get(_opp_id(teams[j].schedule[w]), j)
+                opp_score = teams[j].scores[w] if opp == i else teams[opp].scores[w]
+                mine = teams[i].scores[w]
+                tot += 1.0 if mine > opp_score else 0.5 if mine == opp_score else 0.0
+            wins[i, j] = tot
+    return {"teams": teams, "weeks": weeks, "wins": wins, "games": len(weeks)}
+
+
+def _lerp_color(scale, t: float) -> str:
+    t = min(1.0, max(0.0, t))
+    for (p0, c0), (p1, c1) in zip(scale, scale[1:]):
+        if t <= p1:
+            f = 0 if p1 == p0 else (t - p0) / (p1 - p0)
+            a, b = _rgb(c0), _rgb(c1)
+            return "#%02x%02x%02x" % tuple(round(a[k] + (b[k] - a[k]) * f) for k in range(3))
+    return scale[-1][1]
+
+
+def _ink_for(color: str) -> str:
+    r, g, b = _rgb(color)
+    return "#0b1220" if (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.55 else "#ffffff"
+
+
+def _fmt_wl(w: float, games: int) -> str:
+    losses = games - w
+    fw = f"{int(w)}" if abs(w - round(w)) < 1e-9 else f"{w:.1f}"
+    fl = f"{int(round(losses))}" if abs(losses - round(losses)) < 1e-9 else f"{losses:.1f}"
+    return f"{fw}-{fl}"
+
+
+def schedule_comparison_html(cmp_: dict) -> str:
+    """Grid: rows are teams' scores, columns are schedules. The diagonal is the
+    team's real record. Colored on the same red-to-green scale as the standings."""
+    teams, wins, games = cmp_["teams"], cmp_["wins"], cmp_["games"]
+    if not games:
+        return ""
+    head = "".join(
+        f'<th class="sc-h" title="{html.escape(t.team_name)}"><span>{html.escape(t.team_name)}</span></th>'
+        for t in teams
+    )
+    rows = []
+    for i, t in enumerate(teams):
+        cells = []
+        for j in range(len(teams)):
+            w = wins[i, j]
+            color = _lerp_color(WIN_BAR_COLORSCALE, w / games)
+            cls = "sc-cell sc-diag" if i == j else "sc-cell"
+            cells.append(f'<td class="{cls}" style="background:{color};color:{_ink_for(color)};">{_fmt_wl(w, games)}</td>')
+        rows.append(f'<tr><th class="sc-r">{html.escape(t.team_name)}</th>{"".join(cells)}</tr>')
+    return (
+        '<div class="ft-wrap"><table class="sc"><thead><tr><th class="sc-corner">Team ↓ · Schedule →</th>'
+        f'{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def schedule_luck_df(cmp_: dict) -> pd.DataFrame:
+    """Actual wins vs. the average over every schedule (the team's record if the
+    schedule were picked at random), plus how strong the real schedule was."""
+    teams, wins, games = cmp_["teams"], cmp_["wins"], cmp_["games"]
+    n = len(teams)
+    rows = []
+    for i, t in enumerate(teams):
+        actual = float(wins[i, i])
+        expected = float(wins[i].mean())
+        # strength of schedule = average score of the opponents faced
+        weeks = cmp_["weeks"]
+        opp_pts = []
+        for w in weeks:
+            opp = _opp_id(t.schedule[w])
+            other = next((x for x in teams if x.team_id == opp), None)
+            if other is not None and other is not t:
+                opp_pts.append(float(other.scores[w]))
+        rows.append({
+            "Team": t.team_name,
+            "Actual": _fmt_wl(actual, games),
+            "Avg wins": expected,
+            "Wins vs. avg": actual - expected,
+            "Opp. PPG faced": float(np.mean(opp_pts)) if opp_pts else float("nan"),
+        })
+    df = pd.DataFrame(rows).sort_values("Wins vs. avg", ascending=True, kind="stable").reset_index(drop=True)
+    return df
+
+
+def luck_pill(v) -> str:
+    """Positive = schedule helped (green), negative = schedule hurt (red)."""
+    v = float(v)
+    if abs(v) < 0.25:
+        return pill("even", "#64748b")
+    return pill(f"{v:+.1f}", "#2a9d5c" if v > 0 else "#d64545")
+
+
+def _pct(p: float) -> str:
+    if p >= 0.9995:
+        return "100%"
+    if p <= 0.0005:
+        return "0%"
+    return f"{p * 100:.1f}%"
+
+
+def pct_cell(p: float, color: str) -> str:
+    return (
+        '<div class="bar-cell">'
+        f'<span class="v">{_pct(p)}</span>'
+        '<div class="bar-track">'
+        f'<div class="bar-fill" style="width:{max(0.0, min(1.0, p)) * 100:.1f}%;background:{color};"></div></div></div>'
+    )
+
+
+def playoff_odds_df(model: dict, sim: dict, base: dict | None) -> pd.DataFrame:
+    teams = model["teams"]
+    rows = []
+    for i, t in enumerate(teams):
+        delta = None
+        if base is not None:
+            delta = (sim["playoff"][i] - base["playoff"][i]) * 100
+        rows.append({
+            "Team": t.team_name,
+            "Record": f"{t.wins}-{t.losses}" + (f"-{t.ties}" if getattr(t, "ties", 0) else ""),
+            "Proj. wins": float(sim["proj_wins"][i]),
+            "Playoffs": float(sim["playoff"][i]),
+            "Change": delta,
+            "Bye": float(sim["bye"][i]),
+            "Top seed": float(sim["top_seed"][i]),
+            "Avg seed": float(sim["avg_seed"][i]),
+        })
+    return pd.DataFrame(rows).sort_values(["Playoffs", "Avg seed"], ascending=[False, True], kind="stable").reset_index(drop=True)
+
+
+def odds_table_html(df: pd.DataFrame, n_playoff: int, byes: int, show_change: bool) -> str:
+    cols = ["Team", "Record", "Proj. wins", "Playoffs"] + (["Change"] if show_change else []) + (["Bye"] if byes else []) + ["Avg seed"]
+    view = df[cols].copy()
+    view["Playoffs"] = [pct_cell(p, ACCENT) for p in df["Playoffs"]]
+    raw = ["Playoffs"]
+    if show_change:
+        def chg(v):
+            if v is None or (isinstance(v, float) and np.isnan(v)) or abs(v) < 0.05:
+                return '<span style="opacity:.5">—</span>'
+            return pill(f"{v:+.1f} pts", "#2a9d5c" if v > 0 else "#d64545")
+        view["Change"] = [chg(v) for v in df["Change"]]
+        raw.append("Change")
+    if byes:
+        view["Bye"] = [f'<span class="num">{_pct(p)}</span>' for p in df["Bye"]]
+        raw.append("Bye")
+    # a divider where the field is cut off, based on the expected order
+    marks = {}
+    if 0 < n_playoff < len(view):
+        marks[n_playoff - 1] = f"Top {n_playoff} make the playoffs · by projected odds"
+    return html_table(view, raw_cols=tuple(raw), marks=marks, precision=1).replace(
+        '<table class="ft">', '<table class="ft ft-nowrap">', 1
+    )
+
+
+def seed_heatmap(model: dict, sim: dict, order: list):
+    """Teams x seeds: chance of finishing in each seed, most likely seed darkest."""
+    teams = model["teams"]
+    names = [teams[i].team_name for i in order]
+    z = sim["seed_probs"][order] * 100
+    fig = px.imshow(
+        z, x=[f"#{s + 1}" for s in range(z.shape[1])], y=names, aspect="auto",
+        color_continuous_scale=[[0, "#131c2e"], [1, "#38bdf8"]], zmin=0, zmax=max(40.0, float(z.max())),
+        text_auto=".0f", title="Chance of finishing in each seed (%)",
+    )
+    fig.update_traces(hovertemplate="%{y} · seed %{x}: %{z:.1f}%<extra></extra>")
+    fig.update_xaxes(side="top", title=None)
+    fig.update_yaxes(title=None)
+    fig.update_layout(height=max(280, 36 * len(names) + 110), margin=dict(l=0, r=10, t=80, b=10),
+                      coloraxis_showscale=False)
+    return style_fig(fig)
+
+
+def render_playoff_machine(league, year):
+    reg_weeks = regular_season_weeks(year)
+    model = build_season_model(league, reg_weeks)
+    teams, remaining = model["teams"], model["remaining"]
+    n_playoff = getattr(league.settings, "playoff_team_count", None)
+    mean, sd = team_strength(model["played"])
+    base_wins = np.array([t.wins + 0.5 * getattr(t, "ties", 0) for t in teams], float)
+    base_pf = np.array([float(t.points_for) for t in teams], float)
+    games = [(a, b) for _, a, b in remaining]
+
+    if not remaining:
+        st.info("The regular season is complete, so there's nothing left to pick. "
+                "See Standings for the final playoff field.")
+        return
+
+    # --- state: picks live in widget keys so every click reruns the odds
+    keys = [f"pm_{w}_{teams[a].team_id}_{teams[b].team_id}" for w, a, b in remaining]
+
+    def _clear():
+        for k in keys:
+            st.session_state[k] = None
+
+    def _favorites():
+        for k, (_, a, b) in zip(keys, remaining):
+            st.session_state[k] = teams[a].team_name if mean[a] >= mean[b] else teams[b].team_name
+
+    st.caption(
+        "Pick winners on the left; the odds on the right update instantly. Leave a game "
+        "unpicked and it's simulated 10,000 times using each team's scoring."
+    )
+    left, right = st.columns([1, 1.15], gap="large")
+    with left:
+        b1, b2, _ = st.columns([1, 1.2, 1])
+        b1.button("Reset picks", on_click=_clear, width="stretch")
+        b2.button("Favorites win", on_click=_favorites, width="stretch",
+                  help="Picks the team with the higher recent scoring average in every game.")
+        weeks_left = sorted({w for w, _, _ in remaining})
+        picks = {}
+        for wk in weeks_left:
+            with st.expander(f"Week {wk}", expanded=(wk == weeks_left[0])):
+                for g, ((w, a, b), key) in enumerate(zip(remaining, keys)):
+                    if w != wk:
+                        continue
+                    na, nb = teams[a].team_name, teams[b].team_name
+                    choice = st.segmented_control(
+                        f"{na} vs {nb}", [na, nb], key=key, label_visibility="collapsed",
+                        width="stretch",
+                    )
+                    if choice == na:
+                        picks[g] = a
+                    elif choice == nb:
+                        picks[g] = b
+        n_picked = len(picks)
+
+    base = simulate_playoff_odds(base_wins, base_pf, mean, sd, games, {}, n_playoff)
+    sim = simulate_playoff_odds(base_wins, base_pf, mean, sd, games, picks, n_playoff) if picks else base
+    df = playoff_odds_df(model, sim, base if picks else None)
+    with right:
+        label = f"{n_picked} of {len(games)} remaining games picked" if picks else f"{len(games)} games left, none picked"
+        st.markdown(f"**Playoff odds** · {label}")
+        st.html(odds_table_html(df, sim["n_playoff"], sim["byes"], bool(picks)))
+        if picks:
+            st.caption("Change = shift in playoff odds compared with picking nothing.")
+        rule = getattr(league.settings, "playoff_seed_tie_rule", "")
+        note = "Seeds sort by wins, then points for."
+        if rule and rule != "TOTAL_POINTS_SCORED":
+            note = f"Seeds sort by wins, then points for (your league's tiebreaker is {rule.replace('_', ' ').lower()}, which isn't modeled)."
+        st.caption(note)
+    with st.expander("Seed-by-seed chances", expanded=False):
+        names = [t.team_name for t in teams]
+        order = [names.index(n) for n in df["Team"]]
+        st.plotly_chart(seed_heatmap(model, sim, order), width="stretch")
+    with st.expander("How the odds are calculated"):
+        st.markdown(
+            f"Each remaining game is simulated 10,000 times. A team's score is drawn from a bell curve "
+            f"centered on a blend of its season average and last three games, with a spread of about "
+            f"{sd:.0f} points (the league's typical game-to-game swing). Picked games guarantee your winner "
+            f"but keep realistic scores for the points-for tiebreaker. This uses past scoring only, "
+            f"not injuries or ESPN projections."
+        )
+
+
+def render_schedule_comparison(league, year):
+    reg_weeks = regular_season_weeks(year)
+    cmp_ = schedule_comparison(league, reg_weeks)
+    if not cmp_["games"]:
+        st.info("Schedule comparison needs at least one completed week.")
+        return
+    st.caption(
+        f"Each row is a team's weekly scores replayed against the column team's schedule over "
+        f"{cmp_['games']} completed week{'s' if cmp_['games'] != 1 else ''}. The outlined diagonal is the real record."
+    )
+    st.html(schedule_comparison_html(cmp_))
+    st.write("")
+    st.subheader("Schedule luck")
+    df = schedule_luck_df(cmp_)
+    st.caption("Avg wins = the wins the team averages across every schedule; Wins vs. avg = actual wins minus that. "
+               "Positive (green) means the schedule helped; negative (red) means it hurt. "
+               "Sorted unluckiest first.")
+    view = df.copy()
+    view["Wins vs. avg"] = [luck_pill(v) for v in df["Wins vs. avg"]]
+    st.html(html_table(view, raw_cols=("Wins vs. avg",), precision=1))
+
+
+# ---------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------
 def main():
@@ -2008,11 +2437,13 @@ def main():
 
     st.html(hero(league.settings.name, year, league.current_week))
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+    tab1, tab2, tab3, tab_pm, tab_sc, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         [
             "Standings",
             "Rosters & Lineup",
             "Matchups",
+            "Playoff Machine",
+            "Schedule Comparison",
             "Power Rankings",
             "Free Agents",
             "Injury Report",
@@ -2185,6 +2616,14 @@ def main():
             "under each game is our win probability estimate, built from ESPN's "
             "projections and the points already scored (not ESPN's own figure)."
         )
+
+    # --- Playoff Machine (picks + live odds) ---
+    with tab_pm:
+        render_playoff_machine(league, year)
+
+    # --- Schedule Comparison ---
+    with tab_sc:
+        render_schedule_comparison(league, year)
 
     # --- Power Rankings ---
     with tab4:
