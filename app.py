@@ -13,6 +13,7 @@ import html
 import math
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -2636,14 +2637,61 @@ def trades_from_transactions(league, diag: dict) -> list:
     return raw
 
 
+def trades_from_player_cards(cards: dict, league, diag: dict) -> list:
+    """Third source, for seasons where ESPN's feed and transaction log are empty (past
+    seasons usually): every player card carries that player's own transaction history,
+    including executed trades with all of their legs."""
+    def team_name(tid):
+        t = league.get_team_data(tid) if tid is not None else None
+        return getattr(t, "team_name", None) or "?"
+
+    merged = {}
+    for p in cards.values():
+        txns = getattr(p, "transactions", None) or []
+        if txns:
+            diag["cards_with_txns"] += 1
+        for t in txns:
+            diag["txn_types"][f'{getattr(t, "type", "?")}/{getattr(t, "status", "?")}'] += 1
+            if getattr(t, "type", None) != "TRADE_ACCEPT" or getattr(t, "status", None) != "EXECUTED":
+                continue
+            legs = [i for i in (t.items or []) if getattr(i, "type", None) == "TRADE" and getattr(i, "playerId", None) is not None]
+            if not legs:
+                continue
+            key = str(getattr(t, "related_transaction_id", None) or getattr(t, "id", None))
+            entry = merged.setdefault(key, {"date": getattr(t, "date", None), "legs": {}})
+            for i in legs:
+                entry["legs"][int(i.playerId)] = (i.from_team_id, i.to_team_id)
+            entry["date"] = entry["date"] or getattr(t, "date", None)
+    raw = []
+    for e in merged.values():
+        try:
+            when = datetime.fromtimestamp(float(e["date"]) / 1000.0)
+        except (TypeError, ValueError, OSError):
+            continue
+        raw.append({"date": when, "moves": [
+            {"pid": pid, "player": None, "from": team_name(f), "to": team_name(to)} for pid, (f, to) in e["legs"].items()]})
+    diag["card_trades"] = len(raw)
+    raw.sort(key=lambda r: r["date"], reverse=True)
+    return raw
+
+
 def build_trades(league, year) -> dict:
     """Every trade of the season, each player's positional rank, points and PPG before
     and after the trade (regular season only), and who came out ahead."""
     reg = regular_season_weeks(year)
     cw = getattr(league, "current_week", reg) or reg
     last_week = reg if cw > reg else max(0, cw - 1)
-    diag = {"feed_topics": 0, "txn_rows": 0, "source": "none", "dropped": 0, "errors": []}
+    diag = {"feed_topics": 0, "txn_rows": 0, "source": "none", "dropped": 0, "errors": [],
+            "cards": 0, "cards_with_txns": 0, "card_trades": 0, "txn_types": Counter()}
     result = {"trades": [], "last_week": last_week, "year": year, "diag": diag}
+
+    def pool_ids():
+        try:
+            return list(league.espn_request.get_player_pool_ids(max(1, last_week), 500))[:TRADE_POOL_SIZE]
+        except Exception:
+            return [p.playerId for t in getattr(league, "teams", []) for p in getattr(t, "roster", [])]
+
+    cards, pool = {}, None
     raw = parse_trade_activities(fetch_trade_feed(league, diag))
     if raw:
         diag["source"] = "activity feed"
@@ -2652,15 +2700,21 @@ def build_trades(league, year) -> dict:
         if raw:
             diag["source"] = "transaction log"
     if not raw:
+        pool = pool_ids()
+        rostered = [p.playerId for t in getattr(league, "teams", []) for p in getattr(t, "roster", [])]
+        cards = fetch_player_cards(league, rostered + pool)
+        raw = trades_from_player_cards(cards, league, diag)
+        if raw:
+            diag["source"] = "player cards"
+    diag["cards"] = len(cards)
+    if not raw:
         return result
 
     traded_ids = [m["pid"] for t in raw for m in t["moves"]]
-    pool_ids = []
-    try:
-        pool_ids = list(league.espn_request.get_player_pool_ids(max(1, last_week), 500))[:TRADE_POOL_SIZE]
-    except Exception:
-        pool_ids = [p.playerId for t in getattr(league, "teams", []) for p in getattr(t, "roster", [])]
-    cards = fetch_player_cards(league, traded_ids + pool_ids)
+    if pool is None:
+        pool = pool_ids()
+    missing = [i for i in traded_ids + pool if i not in cards]
+    cards.update(fetch_player_cards(league, missing))
     for t in raw:  # players ESPN can't identify at all (draft picks, stale ids) can't be scored
         keep = [m for m in t["moves"] if m["player"] is not None or m["pid"] in cards]
         diag["dropped"] += len(t["moves"]) - len(keep)
@@ -2978,8 +3032,11 @@ def render_trade_history(league_id, year, espn_s2, swid):
         st.info(f"No trades were found for the {sel_year} season.")
         d = data.get("diag") or {}
         st.caption(
-            f"Checked ESPN's activity feed ({d.get('feed_topics', 0)} trade entries) and the transaction log "
-            f"({d.get('txn_rows', 0)} executed-trade rows). "
+            f"Checked ESPN's activity feed ({d.get('feed_topics', 0)} trade entries), the transaction log "
+            f"({d.get('txn_rows', 0)} executed-trade rows) and {d.get('cards', 0)} player cards "
+            f"({d.get('cards_with_txns', 0)} with transactions, {d.get('card_trades', 0)} trades found). "
+            + ("Transaction types seen: " + ", ".join(f"{k} x{v}" for k, v in sorted(d.get("txn_types", {}).items())[:8]) + ". "
+               if d.get("txn_types") else "")
             + (f"{d['dropped']} traded item(s) couldn't be matched to a player. " if d.get("dropped") else "")
             + ("Errors: " + "; ".join(d["errors"][:3]) if d.get("errors") else "")
         )
