@@ -1279,6 +1279,18 @@ h2, h3 { letter-spacing: -0.01em; }
 .sc .sc-corner { font-size: 0.68rem; opacity: 0.7; font-weight: 600; }
 .sc .sc-cell { text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; padding: 0.42rem 0.1rem; border-radius: 6px; }
 .sc .sc-diag { outline: 2px solid #e6ebf5; outline-offset: -2px; }
+.trade-card { border: 1px solid rgba(128,128,128,0.25); border-radius: 14px; padding: 0.9rem 1rem 1rem; margin-bottom: 1rem; background: rgba(128,128,128,0.04); }
+.trade-head { display: flex; justify-content: space-between; align-items: center; gap: 0.8rem; margin-bottom: 0.7rem; flex-wrap: wrap; }
+.trade-title { font-weight: 800; font-size: 1.05rem; }
+.trade-sub { font-size: 0.78rem; opacity: 0.65; }
+.trade-net { margin-top: 0.6rem; font-size: 0.85rem; opacity: 0.85; }
+.ft-trade th.grp-h { text-align: center; border-bottom: 1px solid rgba(128,128,128,0.25); }
+.ft-trade .trade-mv { white-space: nowrap; opacity: 0.85; font-size: 0.85rem; }
+.ft .grp td { background: rgba(56,189,248,0.09); font-weight: 700; }
+.grp-owner { font-weight: 500; opacity: 0.6; margin-left: 0.4rem; font-size: 0.8rem; }
+.tipnum { border-bottom: 1px dotted currentColor; cursor: help; }
+.sc .sc-cell small { display: block; font-weight: 500; font-size: 0.66rem; opacity: 0.8; }
+.sc .sc-na { background: rgba(128,128,128,0.12); opacity: 0.6; text-align: center; border-radius: 6px; }
 .bar-cell { display: flex; align-items: center; gap: 0.5rem; min-width: 105px; }
 .bar-cell .v { min-width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
 .bar-track { flex: 1; height: 8px; border-radius: 999px; background: rgba(128,128,128,0.22); overflow: hidden; }
@@ -2248,8 +2260,12 @@ def pct_cell(p: float, color: str) -> str:
     )
 
 
-def playoff_odds_df(model: dict, sim: dict, base: dict | None) -> pd.DataFrame:
+def playoff_odds_df(model: dict, sim: dict, base: dict | None, add_w=None, add_l=None) -> pd.DataFrame:
+    """One row per team. `add_w` / `add_l` are the wins and losses handed out by
+    the user's picks, so the Record column moves as games are picked."""
     teams = model["teams"]
+    add_w = np.zeros(len(teams), int) if add_w is None else add_w
+    add_l = np.zeros(len(teams), int) if add_l is None else add_l
     rows = []
     for i, t in enumerate(teams):
         delta = None
@@ -2257,7 +2273,7 @@ def playoff_odds_df(model: dict, sim: dict, base: dict | None) -> pd.DataFrame:
             delta = (sim["playoff"][i] - base["playoff"][i]) * 100
         rows.append({
             "Team": t.team_name,
-            "Record": f"{t.wins}-{t.losses}" + (f"-{t.ties}" if getattr(t, "ties", 0) else ""),
+            "Record": f"{t.wins + int(add_w[i])}-{t.losses + int(add_l[i])}" + (f"-{t.ties}" if getattr(t, "ties", 0) else ""),
             "Proj. wins": float(sim["proj_wins"][i]),
             "Playoffs": float(sim["playoff"][i]),
             "Change": delta,
@@ -2366,30 +2382,35 @@ def render_playoff_machine(league, year):
 
     base = simulate_playoff_odds(base_wins, base_pf, mean, sd, games, {}, n_playoff)
     sim = simulate_playoff_odds(base_wins, base_pf, mean, sd, games, picks, n_playoff) if picks else base
-    df = playoff_odds_df(model, sim, base if picks else None)
+    add_w = np.zeros(len(teams), int)
+    add_l = np.zeros(len(teams), int)
+    for g, winner in picks.items():
+        loser = games[g][1] if games[g][0] == winner else games[g][0]
+        add_w[winner] += 1
+        add_l[loser] += 1
+    df = playoff_odds_df(model, sim, base if picks else None, add_w, add_l)
     with right:
         label = f"{n_picked} of {len(games)} remaining games picked" if picks else f"{len(games)} games left, none picked"
         st.markdown(f"**Playoff odds** · {label}")
         st.html(odds_table_html(df, sim["n_playoff"], sim["byes"], bool(picks)))
-        if picks:
-            st.caption("Change = shift in playoff odds compared with picking nothing.")
         rule = getattr(league.settings, "playoff_seed_tie_rule", "")
         note = "Seeds sort by wins, then points for."
         if rule and rule != "TOTAL_POINTS_SCORED":
             note = f"Seeds sort by wins, then points for (your league's tiebreaker is {rule.replace('_', ' ').lower()}, which isn't modeled)."
-        st.caption(note)
+        foot = [
+            "Records include your picks." if picks else "",
+            "Change = shift in playoff odds compared with picking nothing." if picks else "",
+            note,
+            f"Each unpicked game is simulated 10,000 times: a team's score is drawn from a bell curve centered on a blend "
+            f"of its season average and last three games, with a spread of about {sd:.0f} points (the league's typical "
+            f"game-to-game swing). Picked games guarantee your winner but keep realistic scores for the points-for "
+            f"tiebreaker. Odds use past scoring only, not injuries or ESPN projections.",
+        ]
+        st.caption(" ".join(x for x in foot if x))
     with st.expander("Seed-by-seed chances", expanded=False):
         names = [t.team_name for t in teams]
         order = [names.index(n) for n in df["Team"]]
         st.plotly_chart(seed_heatmap(model, sim, order), width="stretch")
-    with st.expander("How the odds are calculated"):
-        st.markdown(
-            f"Each remaining game is simulated 10,000 times. A team's score is drawn from a bell curve "
-            f"centered on a blend of its season average and last three games, with a spread of about "
-            f"{sd:.0f} points (the league's typical game-to-game swing). Picked games guarantee your winner "
-            f"but keep realistic scores for the points-for tiebreaker. This uses past scoring only, "
-            f"not injuries or ESPN projections."
-        )
 
 
 def render_schedule_comparison(league, year):
@@ -2415,6 +2436,523 @@ def render_schedule_comparison(league, year):
 
 
 # ---------------------------------------------------------------------
+# Trade history
+# ---------------------------------------------------------------------
+TRADE_FETCH_SIZE = 200     # most trades a season could contain
+TRADE_POOL_SIZE = 450      # most-owned players, used as the field for positional ranks
+CARD_BATCH = 40            # player cards per ESPN request
+TRADE_CLOSE_MARGIN = 5.0   # under this many points since the trade, call it even
+
+
+def _as_list(x) -> list:
+    if x is None:
+        return []
+    return list(x) if isinstance(x, (list, tuple)) else [x]
+
+
+def fetch_player_cards(league, ids) -> dict:
+    """{playerId: Player} with full-season weekly stats, fetched in batches."""
+    ids = [int(i) for i in dict.fromkeys(ids)]
+    out = {}
+    for k in range(0, len(ids), CARD_BATCH):
+        try:
+            got = _as_list(league.player_info(playerId=ids[k:k + CARD_BATCH]))
+        except Exception:
+            continue
+        for p in got:
+            pid = getattr(p, "playerId", None)
+            if pid is not None:
+                out[int(pid)] = p
+    return out
+
+
+def weekly_points(player) -> dict:
+    """{week: (fantasy points, played?)} from a Player's stats; real games only."""
+    out = {}
+    for wk, s in (getattr(player, "stats", None) or {}).items():
+        try:
+            w = int(wk)
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or not isinstance(s, dict) or "points" not in s:
+            continue
+        pts = float(s.get("points") or 0)
+        bd = s.get("breakdown")
+        out[w] = (pts, bool(bd) if bd is not None else pts != 0)
+    return out
+
+
+def window_stats(weekly: dict, lo: int, hi: int) -> dict:
+    """Total points, games played and points per game for weeks lo..hi."""
+    pts, games = 0.0, 0
+    for w, (p, played) in weekly.items():
+        if lo <= w <= hi:
+            pts += p
+            games += 1 if played else 0
+    return {"pts": round(pts, 1), "games": games, "ppg": round(pts / games, 1) if games else None}
+
+
+def positional_rank(pid, pos, field: dict, lo: int, hi: int):
+    """1 = most points at the position over weeks lo..hi, among the field of players."""
+    if not pos or pid not in field or lo > hi:
+        return None
+    mine = window_stats(field[pid]["weekly"], lo, hi)
+    if not mine["games"]:
+        return None
+    better = sum(
+        1 for q, info in field.items()
+        if q != pid and info["pos"] == pos and window_stats(info["weekly"], lo, hi)["pts"] > mine["pts"]
+    )
+    return better + 1
+
+
+def split_week(player, trade_dt, week_starts: dict, last_week: int) -> int:
+    """The first week whose game for this player kicks off after the trade; games from
+    that week on count as 'after'. Falls back to league-wide kickoff dates."""
+    def date_of(v):
+        return v.get("date") if isinstance(v, dict) else v
+    sched = {}
+    for k, v in (getattr(player, "schedule", None) or {}).items():
+        try:
+            sched[int(k)] = date_of(v)
+        except (TypeError, ValueError):
+            continue
+    cand = sched or week_starts
+    for wk in sorted(cand):
+        if cand[wk] is not None and cand[wk] > trade_dt:
+            return wk
+    return (max(cand) + 1) if cand else last_week + 1
+
+
+def parse_trade_activities(activities) -> list:
+    """Group ESPN's trade messages into trades: each has a date and the players that
+    moved, with who sent and who received them. Draft picks and unknown ids are skipped."""
+    trades = []
+    for act in activities or []:
+        sent, recv = {}, {}
+        for action in getattr(act, "actions", []) or []:
+            team, kind, player = action[0], action[1], action[2]
+            pid = getattr(player, "playerId", None)
+            if pid is None:
+                continue
+            name = getattr(team, "team_name", None) or "Unknown team"
+            if kind == "TRADE_SENT":
+                sent[int(pid)] = (name, player)
+            elif kind == "TRADE_RECEIVED":
+                recv[int(pid)] = (name, player)
+        moves = []
+        for pid in dict.fromkeys(list(sent) + list(recv)):
+            frm = sent.get(pid)
+            to = recv.get(pid)
+            moves.append({"pid": pid, "player": (frm or to)[1],
+                          "from": frm[0] if frm else "?", "to": to[0] if to else "?"})
+        if not moves:
+            continue
+        try:
+            when = datetime.fromtimestamp(float(act.date) / 1000.0)
+        except (TypeError, ValueError, AttributeError, OSError):
+            continue
+        trades.append({"date": when, "moves": moves})
+    trades.sort(key=lambda t: t["date"], reverse=True)
+    return trades
+
+
+def build_trades(league, year) -> dict:
+    """Every trade of the season, each player's positional rank, points and PPG before
+    and after the trade (regular season only), and who came out ahead."""
+    reg = regular_season_weeks(year)
+    cw = getattr(league, "current_week", reg) or reg
+    last_week = reg if cw > reg else max(0, cw - 1)
+    raw = parse_trade_activities(league.recent_activity(size=TRADE_FETCH_SIZE, msg_type="TRADED"))
+    result = {"trades": [], "last_week": last_week, "year": year}
+    if not raw:
+        return result
+
+    traded_ids = [m["pid"] for t in raw for m in t["moves"]]
+    pool_ids = []
+    try:
+        pool_ids = list(league.espn_request.get_player_pool_ids(max(1, last_week), 500))[:TRADE_POOL_SIZE]
+    except Exception:
+        pool_ids = [p.playerId for t in getattr(league, "teams", []) for p in getattr(t, "roster", [])]
+    cards = fetch_player_cards(league, traded_ids + pool_ids)
+
+    field, week_starts = {}, {}
+    for pid, p in cards.items():
+        field[pid] = {"pos": getattr(p, "position", "") or "", "weekly": weekly_points(p)}
+        for k, v in (getattr(p, "schedule", None) or {}).items():
+            try:
+                d = v.get("date") if isinstance(v, dict) else v
+                wk = int(k)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if d is not None and (wk not in week_starts or d < week_starts[wk]):
+                week_starts[wk] = d
+
+    for t in raw:
+        rows, teams = [], []
+        for m in t["moves"]:
+            p = cards.get(m["pid"], m["player"])
+            pos = getattr(p, "position", "") or ""
+            split = split_week(p, t["date"], week_starts, last_week)
+            weekly = field.get(m["pid"], {}).get("weekly") or weekly_points(p)
+            field.setdefault(m["pid"], {"pos": pos, "weekly": weekly})
+            side = {}
+            for label, lo, hi in (("before", 1, split - 1), ("after", split, last_week)):
+                st_ = window_stats(weekly, lo, hi)
+                st_["rank"] = positional_rank(m["pid"], pos, field, lo, hi)
+                side[label] = st_
+            rows.append({"name": getattr(p, "name", str(m["pid"])), "pos": pos, "from": m["from"],
+                         "to": m["to"], "split": split, **side})
+            for n in (m["from"], m["to"]):
+                if n != "?" and n not in teams:
+                    teams.append(n)
+        net = {n: 0.0 for n in teams}
+        for r in rows:
+            pts = r["after"]["pts"]
+            if r["to"] in net:
+                net[r["to"]] += pts
+            if r["from"] in net:
+                net[r["from"]] -= pts
+        winner, margin = None, 0.0
+        if net:
+            ordered = sorted(net.items(), key=lambda kv: -kv[1])
+            winner, margin = ordered[0][0], ordered[0][1] - (ordered[1][1] if len(ordered) > 1 else 0.0)
+            margin = margin / 2 if len(net) == 2 else margin
+            if margin < TRADE_CLOSE_MARGIN:
+                winner = None
+        result["trades"].append({"date": t["date"], "teams": teams, "players": rows,
+                                 "net": net, "winner": winner, "margin": round(margin, 1),
+                                 "week": min(r["split"] for r in rows)})
+    return result
+
+
+def _rank_text(pos, rank) -> str:
+    return f"{pos}{rank}" if rank and pos else "—"
+
+
+def _num_text(v, fmt="{:.1f}") -> str:
+    return "—" if v is None else fmt.format(v)
+
+
+def trade_card_html(trade: dict, last_week: int) -> str:
+    when = trade["date"].strftime("%b %d, %Y")
+    title = " ⇄ ".join(html.escape(n) for n in trade["teams"]) or "Trade"
+    head = (
+        '<tr><th rowspan="2">Player</th><th rowspan="2">Pos</th><th rowspan="2">Moved</th>'
+        '<th colspan="3" class="grp-h">Before the trade</th><th colspan="3" class="grp-h">After the trade</th></tr>'
+        '<tr><th>Rank</th><th>Pts</th><th>PPG</th><th>Rank</th><th>Pts</th><th>PPG</th></tr>'
+    )
+    body = []
+    for r in trade["players"]:
+        b, a = r["before"], r["after"]
+        body.append(
+            "<tr>"
+            f'<td><b>{html.escape(r["name"])}</b></td><td>{html.escape(r["pos"] or "—")}</td>'
+            f'<td class="trade-mv">{html.escape(r["from"])} → {html.escape(r["to"])}</td>'
+            f'<td class="num">{_rank_text(r["pos"], b["rank"])}</td><td class="num">{_num_text(b["pts"]) if b["games"] else "—"}</td>'
+            f'<td class="num">{_num_text(b["ppg"])}</td>'
+            f'<td class="num">{_rank_text(r["pos"], a["rank"])}</td><td class="num">{_num_text(a["pts"]) if a["games"] else "—"}</td>'
+            f'<td class="num">{_num_text(a["ppg"])}</td></tr>'
+        )
+    if trade["winner"]:
+        verdict = pill(f'{trade["winner"]} ahead by {trade["margin"]:.1f} pts', "#2a9d5c")
+    elif any(r["after"]["games"] for r in trade["players"]):
+        verdict = pill("Too close to call", "#64748b")
+    else:
+        verdict = pill("No games played since the trade", "#64748b")
+    net = " · ".join(
+        f'{html.escape(n)} <b>{v:+.1f}</b>' for n, v in sorted(trade["net"].items(), key=lambda kv: -kv[1])
+    )
+    return (
+        '<div class="trade-card">'
+        f'<div class="trade-head"><div><div class="trade-title">{title}</div>'
+        f'<div class="trade-sub">{when} · games from week {trade["week"]} on count as "after"</div></div>{verdict}</div>'
+        f'<div class="ft-wrap"><table class="ft ft-trade"><thead>{head}</thead><tbody>{"".join(body)}</tbody></table></div>'
+        f'<div class="trade-net">Points since the trade, received minus sent: {net}</div>'
+        '</div>'
+    )
+
+
+# ---------------------------------------------------------------------
+# League history
+# ---------------------------------------------------------------------
+def _owner_key(team) -> str:
+    owners = getattr(team, "owners", None) or []
+    own = owners[0] if owners else {}
+    return str(own.get("id") or f"team-{team.team_id}")
+
+
+def _owner_label(team) -> str:
+    owners = getattr(team, "owners", None) or []
+    own = owners[0] if owners else {}
+    return str(own.get("firstName") or own.get("displayName") or "")
+
+
+def season_snapshot(league, year) -> dict:
+    """One season boiled down to plain data: for each team (keyed by its owner, since
+    team names change) every finished regular-season game with both scores."""
+    reg = regular_season_weeks(year)
+    teams = list(league.teams)
+    by_id = {t.team_id: t for t in teams}
+    out = []
+    for t in teams:
+        games = []
+        for w, opp in enumerate(list(t.schedule)[:reg]):
+            if w >= len(t.scores) or not _decided(t, w):
+                continue
+            o = opp if hasattr(opp, "team_id") else by_id.get(opp)
+            if o is None or o is t or w >= len(o.scores):
+                continue
+            pf, pa = float(t.scores[w] or 0), float(o.scores[w] or 0)
+            if pf <= 0 and pa <= 0:
+                continue
+            games.append({"week": w + 1, "pf": pf, "pa": pa, "opp": _owner_key(o), "opp_team": o.team_name})
+        out.append({"key": _owner_key(t), "owner": _owner_label(t), "team": t.team_name,
+                    "finish": int(getattr(t, "final_standing", 0) or 0), "games": games})
+    return {"year": int(year), "teams": out}
+
+
+@st.cache_data(show_spinner="Loading past seasons for league history...", ttl=24 * 60 * 60)
+def get_past_season_snapshots(league_id: int, year: int, espn_s2: str, swid: str) -> list:
+    """Snapshots of every season before `year`, newest first, stopping at the first
+    season ESPN can't return."""
+    snaps = []
+    for y in range(year - 1, year - 1 - HISTORY_MAX_SEASONS, -1):
+        try:
+            past = League(league_id=league_id, year=y, espn_s2=espn_s2, swid=swid)
+        except Exception:
+            break
+        snaps.append(season_snapshot(past, y))
+    return snaps
+
+
+def _result(pf, pa) -> str:
+    return "W" if pf > pa else "L" if pf < pa else "T"
+
+
+def season_rows(snapshots: list) -> list:
+    """One row per owner per season: record, average points for / against, finish,
+    and the individual scores behind the averages."""
+    rows = []
+    for snap in snapshots:
+        for t in snap["teams"]:
+            g = t["games"]
+            if not g:
+                continue
+            res = [_result(x["pf"], x["pa"]) for x in g]
+            rows.append({
+                "key": t["key"], "owner": t["owner"], "team": t["team"], "year": snap["year"],
+                "finish": t["finish"], "w": res.count("W"), "l": res.count("L"), "t": res.count("T"),
+                "pf_avg": float(np.mean([x["pf"] for x in g])), "pa_avg": float(np.mean([x["pa"] for x in g])),
+                "games": g,
+            })
+    return rows
+
+
+def head_to_head(snapshots: list) -> dict:
+    """{(owner, opponent): {'w','l','t','pf': [...], 'pa': [...]}} across every season."""
+    h2h = {}
+    for snap in snapshots:
+        for t in snap["teams"]:
+            for x in t["games"]:
+                if x["opp"] == t["key"]:
+                    continue
+                d = h2h.setdefault((t["key"], x["opp"]), {"w": 0, "l": 0, "t": 0, "pf": [], "pa": []})
+                d[{"W": "w", "L": "l", "T": "t"}[_result(x["pf"], x["pa"])]] += 1
+                d["pf"].append(x["pf"])
+                d["pa"].append(x["pa"])
+    return h2h
+
+
+def latest_names(snapshots: list) -> dict:
+    """{owner key: (latest team name, owner first name)}, from the newest season each appears in."""
+    names = {}
+    for snap in sorted(snapshots, key=lambda s: s["year"]):
+        for t in snap["teams"]:
+            names[t["key"]] = (t["team"], t["owner"])
+    return names
+
+
+def _tip(text: str) -> str:
+    return html.escape(text, quote=True).replace("\n", "&#10;")
+
+
+def scores_tip(games: list, field: str) -> str:
+    lines = []
+    for x in games:
+        lines.append(f'Wk {x["week"]}: {x[field]:.2f}  vs {x["opp_team"]} ({_result(x["pf"], x["pa"])})')
+    return "\n".join(lines)
+
+
+def record_text(w, l, t=0) -> str:
+    return f"{w}-{l}" + (f"-{t}" if t else "")
+
+
+def _pct_text(w, l, t) -> str:
+    n = w + l + t
+    return "—" if not n else f"{(w + 0.5 * t) / n * 100:.0f}%"
+
+
+def season_history_html(rows: list, names: dict, keys: list) -> str:
+    """Grouped table: an all-time line per team, then one row per season (newest first).
+    Hover an average to see the scores behind it."""
+    head = ("<th>Season</th><th>Team name</th><th>Finish</th><th>Record</th><th>Win %</th>"
+            "<th>Avg PF</th><th>Avg PA</th>")
+    body = []
+    for key in keys:
+        mine = sorted((r for r in rows if r["key"] == key), key=lambda r: -r["year"])
+        if not mine:
+            continue
+        w, l, t = (sum(r[k] for r in mine) for k in ("w", "l", "t"))
+        allg = [g for r in mine for g in r["games"]]
+        pf = float(np.mean([g["pf"] for g in allg]))
+        pa = float(np.mean([g["pa"] for g in allg]))
+        team, owner = names.get(key, (mine[0]["team"], mine[0]["owner"]))
+        label = html.escape(team) + (f' <span class="grp-owner">{html.escape(owner)}</span>' if owner else "")
+        body.append(
+            f'<tr class="grp"><td colspan="3">{label}</td><td class="num">{record_text(w, l, t)}</td>'
+            f'<td class="num">{_pct_text(w, l, t)}</td>'
+            f'<td class="num"><span class="tipnum" title="{_tip(scores_tip(allg, "pf"))}">{pf:.1f}</span></td>'
+            f'<td class="num"><span class="tipnum" title="{_tip(scores_tip(allg, "pa"))}">{pa:.1f}</span></td></tr>'
+        )
+        for r in mine:
+            fin = f'{r["finish"]}' if r["finish"] else "—"
+            body.append(
+                f'<tr><td>{r["year"]}</td><td>{html.escape(r["team"])}</td><td class="num">{fin}</td>'
+                f'<td class="num">{record_text(r["w"], r["l"], r["t"])}</td><td class="num">{_pct_text(r["w"], r["l"], r["t"])}</td>'
+                f'<td class="num"><span class="tipnum" title="{_tip(scores_tip(r["games"], "pf"))}">{r["pf_avg"]:.1f}</span></td>'
+                f'<td class="num"><span class="tipnum" title="{_tip(scores_tip(r["games"], "pa"))}">{r["pa_avg"]:.1f}</span></td></tr>'
+            )
+    return f'<div class="ft-wrap"><table class="ft ft-hist"><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
+def h2h_matrix_html(h2h: dict, names: dict, order: list) -> str:
+    """Win % of each row team against each column team, all seasons combined. Colored on
+    the same red-to-green scale; hover a cell for the record and average scores."""
+    head = "".join(
+        f'<th class="sc-h" title="{html.escape(names[k][0])}"><span>{html.escape(names[k][0])}</span></th>' for k in order
+    )
+    rows = []
+    for a in order:
+        cells = []
+        for b in order:
+            d = h2h.get((a, b))
+            if a == b or not d:
+                cells.append('<td class="sc-cell sc-na">—</td>')
+                continue
+            n = d["w"] + d["l"] + d["t"]
+            p = (d["w"] + 0.5 * d["t"]) / n
+            color = _lerp_color(WIN_BAR_COLORSCALE, p)
+            tip = (f'{names[a][0]} vs {names[b][0]}\n{record_text(d["w"], d["l"], d["t"])} over {n} games\n'
+                   f'Avg PF {np.mean(d["pf"]):.1f} · Avg PA {np.mean(d["pa"]):.1f}')
+            cells.append(
+                f'<td class="sc-cell" title="{_tip(tip)}" style="background:{color};color:{_ink_for(color)};">'
+                f'{p * 100:.0f}%<small>{record_text(d["w"], d["l"], d["t"])}</small></td>'
+            )
+        rows.append(f'<tr><th class="sc-r">{html.escape(names[a][0])}</th>{"".join(cells)}</tr>')
+    return (
+        '<div class="ft-wrap"><table class="sc"><thead><tr><th class="sc-corner">Team ↓ · vs →</th>'
+        f'{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def h2h_detail_df(h2h: dict, names: dict, key: str, order: list) -> pd.DataFrame:
+    rows = []
+    for b in order:
+        d = h2h.get((key, b))
+        if b == key or not d:
+            continue
+        n = d["w"] + d["l"] + d["t"]
+        pf, pa = float(np.mean(d["pf"])), float(np.mean(d["pa"]))
+        rows.append({"Opponent": names[b][0], "Record": record_text(d["w"], d["l"], d["t"]),
+                     "Win %": (d["w"] + 0.5 * d["t"]) / n * 100, "Avg PF": pf, "Avg PA": pa,
+                     "Avg margin": pf - pa, "Games": n})
+    return pd.DataFrame(rows).sort_values("Win %", ascending=False, kind="stable").reset_index(drop=True) if rows else pd.DataFrame()
+
+
+def render_trade_history(league_id, year, espn_s2, swid):
+    first = 2019  # ESPN only serves trade activity from 2019 on
+    years = list(range(first, int(year) + 1))
+    c1, c2 = st.columns([1, 2])
+    sel_year = c1.selectbox("Season", years[::-1], index=0, key="trade_year")
+    try:
+        data = get_trade_history(int(league_id), int(sel_year), espn_s2, swid)
+    except Exception as e:
+        st.error(f"Couldn't load trades for {sel_year} from ESPN. ({e})")
+        return
+    trades = data["trades"]
+    if not trades:
+        st.info(f"No trades were found for the {sel_year} season.")
+        return
+    teams = sorted({n for t in trades for n in t["teams"]})
+    picked = c2.multiselect("Filter by team", teams, key="trade_teams", placeholder="All teams",
+                            filter_mode=None)
+    shown = [t for t in trades if not picked or any(n in picked for n in t["teams"])]
+    st.caption(f"{len(shown)} of {len(trades)} trade{'s' if len(trades) != 1 else ''} in {sel_year}, newest first.")
+    if not shown:
+        st.info("No trades match that team filter.")
+        return
+    for t in shown:
+        st.html(trade_card_html(t, data["last_week"]))
+    st.caption(
+        "Positional rank is each player's rank by total fantasy points among the most-owned players at his position, "
+        "for the games before the trade and for the games after it. The 'after' window runs through week "
+        f"{data['last_week']} (regular season only). Points since the trade, received minus sent, decide who is ahead; "
+        f"anything under {TRADE_CLOSE_MARGIN:.0f} points is called too close. Draft picks in a trade aren't counted."
+    )
+
+
+@st.cache_data(show_spinner="Loading trades and player stats...", ttl=6 * 60 * 60)
+def get_trade_history(league_id: int, year: int, espn_s2: str, swid: str) -> dict:
+    return build_trades(get_league(league_id, year, espn_s2, swid), year)
+
+
+def render_league_history(league, league_id, year, espn_s2, swid):
+    try:
+        past = get_past_season_snapshots(int(league_id), int(year), espn_s2, swid)
+    except Exception as e:
+        st.error(f"Couldn't load past seasons. ({e})")
+        return
+    snapshots = [season_snapshot(league, year)] + list(past)
+    rows = season_rows(snapshots)
+    if not rows:
+        st.info("League history needs at least one completed game.")
+        return
+    names = latest_names(snapshots)
+    h2h = head_to_head(snapshots)
+    all_keys = {r["key"] for r in rows}
+
+    def win_pct(k):
+        mine = [r for r in rows if r["key"] == k]
+        w, l, t = (sum(r[x] for r in mine) for x in ("w", "l", "t"))
+        return (w + 0.5 * t) / max(1, w + l + t)
+
+    order = sorted(all_keys, key=lambda k: -win_pct(k))
+    years_n = len({r["year"] for r in rows})
+    st.subheader("Season by season")
+    labels = {k: names[k][0] for k in order}
+    picked = st.multiselect("Teams", order, format_func=lambda k: labels[k], key="hist_teams",
+                            placeholder="All teams", filter_mode=None)
+    st.html(season_history_html(rows, names, picked or order))
+    st.caption(
+        f"{years_n} season{'s' if years_n != 1 else ''} of regular-season games, grouped by owner (team names change from year "
+        "to year). Each group's first line is the all-time total. Hover an Avg PF or Avg PA number to see every score behind it. "
+        "Finish is the final league rank."
+    )
+    st.write("")
+    st.subheader("All-time head-to-head")
+    st.html(h2h_matrix_html(h2h, names, order))
+    st.caption("Win % of the row team against the column team, with the record underneath. Hover a cell for average points for and against.")
+    pick = st.selectbox("Team detail", order, format_func=lambda k: labels[k], key="hist_detail")
+    det = h2h_detail_df(h2h, names, pick, order)
+    if det.empty:
+        st.info("No head-to-head games yet for this team.")
+    else:
+        st.html(html_table(det, bars={"Win %": (100, ACCENT)}, precision=1))
+    st.caption("Regular-season games only. Ties count as half a win.")
+
+
+# ---------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------
 def main():
@@ -2437,7 +2975,7 @@ def main():
 
     st.html(hero(league.settings.name, year, league.current_week))
 
-    tab1, tab2, tab3, tab_pm, tab_sc, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+    tab1, tab2, tab3, tab_pm, tab_sc, tab4, tab5, tab6, tab7, tab_th, tab_lh, tab8 = st.tabs(
         [
             "Standings",
             "Rosters & Lineup",
@@ -2448,6 +2986,8 @@ def main():
             "Free Agents",
             "Injury Report",
             "Trade Analyzer",
+            "Trade History",
+            "League History",
             "Weekly Recap",
         ]
     )
@@ -2842,6 +3382,14 @@ def main():
                         title="Totals each side gives up", color_discrete_sequence=PALETTE,
                     )
                     st.plotly_chart(style_fig(fig2), width="stretch")
+
+    # --- Trade History ---
+    with tab_th:
+        render_trade_history(league_id, year, espn_s2, swid)
+
+    # --- League History ---
+    with tab_lh:
+        render_league_history(league, league_id, year, espn_s2, swid)
 
     # --- Weekly Recap ---
     with tab8:
