@@ -2451,19 +2451,63 @@ def _as_list(x) -> list:
     return list(x) if isinstance(x, (list, tuple)) else [x]
 
 
-def fetch_player_cards(league, ids) -> dict:
-    """{playerId: Player} with full-season weekly stats, fetched in batches."""
+try:  # the library's own player class, so cards can be built one player at a time
+    from espn_api.football.player import Player as EspnPlayer
+except Exception:  # pragma: no cover
+    EspnPlayer = None
+
+
+def _note(diag, msg: str):
+    if diag is not None and len(diag["errors"]) < 6 and msg not in diag["errors"]:
+        diag["errors"].append(msg[:200])
+
+
+def fetch_player_cards(league, ids, diag=None) -> dict:
+    """{playerId: Player} with full-season weekly stats and transaction history.
+
+    Asks ESPN for the raw cards and builds each Player on its own, so one player the
+    library can't parse (retired, odd position id) only drops that player instead of
+    the whole batch. Falls back to league.player_info when the raw request isn't there."""
     ids = [int(i) for i in dict.fromkeys(ids)]
     out = {}
-    for k in range(0, len(ids), CARD_BATCH):
+    req = getattr(league, "espn_request", None)
+    raw_ok = EspnPlayer is not None and req is not None and hasattr(req, "get_player_card")
+    pro = None
+    if raw_ok:
         try:
-            got = _as_list(league.player_info(playerId=ids[k:k + CARD_BATCH]))
-        except Exception:
-            continue
-        for p in got:
-            pid = getattr(p, "playerId", None)
-            if pid is not None:
-                out[int(pid)] = p
+            pro = league._get_all_pro_schedule()
+        except Exception as e:
+            _note(diag, f"pro schedule: {type(e).__name__}: {e}")
+    final = getattr(league, "finalScoringPeriod", None) or 18
+    for k in range(0, len(ids), CARD_BATCH):
+        batch = ids[k:k + CARD_BATCH]
+        if raw_ok:
+            try:
+                data = req.get_player_card(batch, final)
+            except Exception as e:
+                _note(diag, f"player cards: {type(e).__name__}: {e}")
+                continue
+            wraps = data.get("players") if isinstance(data, dict) else None
+            if not wraps:
+                _note(diag, "player cards: ESPN returned no players")
+            for w in wraps or []:
+                try:
+                    p = EspnPlayer(w, league.year, pro, player_map=getattr(league, "player_map", None),
+                                   get_team_data=getattr(league, "get_team_data", None))
+                except Exception as e:
+                    _note(diag, f"player parse: {type(e).__name__}: {e}")
+                    continue
+                out[int(p.playerId)] = p
+        else:
+            try:
+                got = _as_list(league.player_info(playerId=batch))
+            except Exception as e:
+                _note(diag, f"player cards: {type(e).__name__}: {e}")
+                continue
+            for p in got:
+                pid = getattr(p, "playerId", None)
+                if pid is not None:
+                    out[int(pid)] = p
     return out
 
 
@@ -2688,7 +2732,8 @@ def build_trades(league, year) -> dict:
     def pool_ids():
         try:
             return list(league.espn_request.get_player_pool_ids(max(1, last_week), 500))[:TRADE_POOL_SIZE]
-        except Exception:
+        except Exception as e:
+            _note(diag, f"player pool: {type(e).__name__}: {e}")
             return [p.playerId for t in getattr(league, "teams", []) for p in getattr(t, "roster", [])]
 
     cards, pool = {}, None
@@ -2702,7 +2747,7 @@ def build_trades(league, year) -> dict:
     if not raw:
         pool = pool_ids()
         rostered = [p.playerId for t in getattr(league, "teams", []) for p in getattr(t, "roster", [])]
-        cards = fetch_player_cards(league, rostered + pool)
+        cards = fetch_player_cards(league, rostered + pool, diag)
         raw = trades_from_player_cards(cards, league, diag)
         if raw:
             diag["source"] = "player cards"
@@ -2714,7 +2759,7 @@ def build_trades(league, year) -> dict:
     if pool is None:
         pool = pool_ids()
     missing = [i for i in traded_ids + pool if i not in cards]
-    cards.update(fetch_player_cards(league, missing))
+    cards.update(fetch_player_cards(league, missing, diag))
     for t in raw:  # players ESPN can't identify at all (draft picks, stale ids) can't be scored
         keep = [m for m in t["moves"] if m["player"] is not None or m["pid"] in cards]
         diag["dropped"] += len(t["moves"]) - len(keep)
